@@ -1,0 +1,9 @@
+[run]
+source = order_api
+omit =
+    */__init__.py
+
+[report]
+show_missing = True
+skip_empty = True
+
