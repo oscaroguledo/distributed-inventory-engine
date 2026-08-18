@@ -1,4 +1,8 @@
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-sqlalchemy==2.0.35
+sqlalchemy[asyncio]==2.0.35
+greenlet==3.5.5  # required by sqlalchemy's async engine at runtime — keep explicit,
+                 # it silently breaks if the [asyncio] extra above is ever dropped
 asyncpg==0.30.0
+redis==5.1.1
+pydantic-settings==2.5.2
