@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from fastapi import FastAPI
 
+from order_api.core.config import get_settings
 from order_api.main import app
 
 
@@ -17,11 +18,13 @@ def test_health_router_is_registered():
     assert "/health" in paths
 
 
-def test_main_block_starts_uvicorn_with_expected_args():
+def test_main_block_starts_uvicorn_with_port_from_settings():
+    expected_port = get_settings().order_api_port
+
     sys.modules.pop("order_api.main", None)
     with patch("uvicorn.run") as mock_run:
         runpy.run_module("order_api.main", run_name="__main__")
 
     mock_run.assert_called_once_with(
-        "order_api.main:app", host="0.0.0.0", port=8000, reload=True
+        "order_api.main:app", host="0.0.0.0", port=expected_port, reload=True
     )

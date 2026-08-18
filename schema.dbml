@@ -1,0 +1,52 @@
+Project distributed_inventory_engine {
+  database_type: 'PostgreSQL'
+  Note: 'Durable ledger for the reservation engine. See SYSTEM_DESIGN.md for the full architecture and ORDER_LIFECYCLE.md for how reserve/commit/release write to these tables.'
+}
+
+Table inventory_balances {
+  sku text [pk, note: 'matches Redis key stock:{sku}:available']
+  name text [not null]
+  total_stock integer [not null, note: 'CHECK (total_stock >= 0)']
+  available integer [not null, note: 'CHECK (available >= 0) — durable mirror of the live Redis counter']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`, note: 'refreshed on every update']
+
+  indexes {
+    updated_at [name: 'idx_inventory_balances_updated_at', note: 'lets the reconciliation watchdog find recently-changed balances without a full scan']
+  }
+
+  Note: 'One row per SKU. available is rebuildable from stock_audit_ledger if it or Redis ever drifts.'
+}
+
+Table inventory_reservations {
+  id uuid [pk, note: 'same value as the client-supplied reservation_id']
+  sku text [not null, ref: > inventory_balances.sku]
+  quantity integer [not null, note: 'CHECK (quantity > 0)']
+  status text [not null, note: "CHECK (status IN ('held','committed','released'))"]
+  held_at timestamptz [not null, default: `now()`]
+  resolved_at timestamptz [note: 'NULL while status = held']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`, note: 'refreshed on every status change']
+
+  indexes {
+    (sku, status) [name: 'idx_reservations_sku_status']
+  }
+
+  Note: 'Durable equivalent of a Redis hold:{reservation_id} ticket, plus how it was resolved.'
+}
+
+Table stock_audit_ledger {
+  id uuid [pk, default: `gen_random_uuid()`]
+  reservation_id uuid [not null, ref: > inventory_reservations.id]
+  sku text [not null]
+  quantity integer [not null]
+  event_type text [not null, note: "CHECK (event_type IN ('reserved','committed','released'))"]
+  occurred_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    reservation_id [name: 'idx_ledger_reservation']
+    (sku, occurred_at) [name: 'idx_ledger_sku_time']
+  }
+
+  Note: 'Append-only. Never UPDATE or DELETE — this is what rebuilds the other two tables (or Redis) from scratch if they ever get corrupted.'
+}
