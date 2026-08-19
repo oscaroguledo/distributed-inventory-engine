@@ -1,15 +1,5 @@
--- Atomic token-bucket rate limiter.
--- Runs as one indivisible Redis operation: no two concurrent callers can
--- both read the same token count and both decide they're allowed.
---
--- KEYS[1] = bucket key (e.g. "ratelimit:<client>")
--- ARGV[1] = capacity            (max tokens the bucket can hold)
--- ARGV[2] = refill_rate         (tokens added per second)
--- ARGV[3] = requested           (tokens this call wants to spend)
--- ARGV[4] = now                 (unix timestamp, float seconds)
--- ARGV[5] = ttl_seconds         (expire the bucket key when idle)
---
--- Returns {allowed, tokens_remaining} — allowed is 1 or 0.
+-- Atomic token-bucket check. KEYS[1]=bucket key; ARGV=[capacity,
+-- refill_rate,requested,now,ttl]. Returns {allowed(1/0), tokens_remaining}.
 
 local key = KEYS[1]
 local capacity = tonumber(ARGV[1])

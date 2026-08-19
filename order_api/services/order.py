@@ -30,9 +30,8 @@ class InsufficientStockError(Exception):
 
 
 class ReservationHeld:
-    """Result of a successful (or idempotently-repeated) reserve call. Not a
-    durable record — Postgres only learns about this asynchronously via the
-    stream worker; see ORDER_LIFECYCLE.md "01 — Reserve" steps 5-6."""
+    """Result of a successful (or idempotent) reserve call — not durable;
+    Postgres learns about it later via the stream worker."""
 
     def __init__(self, reservation_id: uuid.UUID, sku: str, quantity: int, available: int):
         self.reservation_id = reservation_id
@@ -52,10 +51,7 @@ class ReservationHeld:
 
 class OrderService:
     """Redis-backed reservation hot path — ORDER_LIFECYCLE.md "01 — Reserve".
-    One atomic Lua script does idempotency + stock check + decrement + hold
-    + stream append; WAIT then bounds how much a replica failover could
-    lose before the client is told it worked.
-    """
+    One atomic Lua script does the hold; WAIT bounds replica failover risk."""
 
     def __init__(
         self,
@@ -117,9 +113,8 @@ class OrderService:
         )
 
     async def seed_stock(self, sku: str, available: int) -> None:
-        """Set Redis's live counter for a SKU. Bootstraps a fresh Redis from
-        Postgres; ongoing drift correction is the reconciliation watchdog's
-        job (SYSTEM_DESIGN.md), not this method's."""
+        """Sets Redis's live counter for a SKU — bootstraps a fresh Redis;
+        ongoing drift correction is the reconciliation watchdog's job."""
         await self.redis.set(f"stock:{sku}:available", available)
 
 

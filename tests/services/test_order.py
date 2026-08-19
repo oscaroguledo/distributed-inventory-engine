@@ -11,9 +11,8 @@ from order_api.services.order import (
 
 
 class _FakeRedis:
-    """Simulates just enough of Redis (register_script + set + wait) to
-    exercise OrderService's own logic. The Lua script's actual atomicity is
-    verified live via Docker, not here — see the reserve.lua comments."""
+    """Simulates just enough of Redis to test OrderService's own logic —
+    the Lua script's actual atomicity is verified live via Docker."""
 
     def __init__(self):
         self.store: dict[str, int] = {}

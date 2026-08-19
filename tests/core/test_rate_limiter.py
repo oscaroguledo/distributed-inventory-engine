@@ -4,9 +4,8 @@ from order_api.core.rate_limiter import RateLimiter, get_rate_limiter
 
 
 class _FakeRedis:
-    """Stands in for redis.asyncio.Redis: register_script returns a callable
-    that records how it was invoked and returns a canned (allowed, tokens)
-    pair, so we test RateLimiter's own logic without a live Redis."""
+    """Stands in for redis.asyncio.Redis so we test RateLimiter's own logic
+    (script args, result parsing) without a live Redis."""
 
     def __init__(self, script_result):
         self._script_result = script_result

@@ -9,9 +9,8 @@ from order_api.core.response import EResponse
 from order_api.routes.health import router as health_router
 from order_api.routes.order import router as order_router
 
-# Configured at import time, not inside __main__: uvicorn imports this module
-# directly (`uvicorn order_api.main:app`), it never runs it as __main__, so
-# logging config placed in the __main__ guard below would never take effect.
+# Configured at import time, not inside __main__ — uvicorn imports this
+# module directly, so a __main__-guarded config would never run.
 logging.basicConfig(level=get_settings().log_level)
 
 app = FastAPI(title="Order API")

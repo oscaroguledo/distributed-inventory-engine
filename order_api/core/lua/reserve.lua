@@ -1,17 +1,5 @@
--- Atomic reserve: idempotency + stock check + decrement + hold + stream
--- append, all as one indivisible Redis operation. See ORDER_LIFECYCLE.md
--- "01 — Reserve" for the full trace this implements.
---
--- KEYS[1] = stock:{sku}:available
--- KEYS[2] = hold:{reservation_id}
--- KEYS[3] = stream:inventory_events (name is settings-driven, passed in)
--- ARGV[1] = sku
--- ARGV[2] = quantity
--- ARGV[3] = reservation_id
--- ARGV[4] = hold_ttl_seconds
---
--- Returns {status, available} where status is one of:
---   "held" | "duplicate" | "insufficient_stock" | "unknown_sku"
+-- Atomic reserve (idempotency+stock check+decrement+hold+stream, one op).
+-- KEYS=[stock,hold,stream]; ARGV=[sku,qty,reservation_id,hold_ttl].
 
 local stock_key = KEYS[1]
 local hold_key = KEYS[2]

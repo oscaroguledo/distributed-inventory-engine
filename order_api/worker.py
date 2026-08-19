@@ -26,9 +26,8 @@ async def ensure_consumer_group(redis, stream: str, group: str) -> None:
 
 
 async def process_batch(session: AsyncSession, messages: list[tuple[str, dict]]) -> int:
-    """Persists 'reserved' events into Postgres. Returns how many were new
-    (not a redelivery of something already processed) — ORDER_LIFECYCLE.md
-    "01 — Reserve" steps 5-6, the async half of the hold."""
+    """Persists 'reserved' events into Postgres — the async half of the
+    hold (ORDER_LIFECYCLE.md "01 — Reserve" steps 5-6)."""
     processed = 0
 
     for _message_id, fields in messages:

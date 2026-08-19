@@ -26,9 +26,8 @@ def test_env_var_overrides_default(monkeypatch):
 
 
 def test_settings_actually_reads_values_from_an_env_file(tmp_path):
-    """monkeypatch.setenv exercises OS env vars, not file parsing — this
-    proves the .env *file* itself is read, which is the real config path
-    for local (non-Docker) runs."""
+    """monkeypatch.setenv tests OS env vars, not file parsing — this
+    proves the .env *file* itself is actually read."""
     env_file = tmp_path / ".env"
     env_file.write_text("LOG_LEVEL=WARNING\nHOLD_TTL_SECONDS=42\n")
 
