@@ -110,15 +110,17 @@ async def test_reserve_rejects_non_positive_quantity():
 
 
 @pytest.mark.asyncio
-async def test_reserve_returns_429_when_rate_limited():
+async def test_reserve_returns_429_when_rate_limited(caplog):
     app.dependency_overrides[get_rate_limiter] = lambda: _DenyAllLimiter()
     app.dependency_overrides[get_order_service] = lambda: _OkOrderService()
 
-    response = await _post_reserve(
-        {"sku": "WIDGET-1", "quantity": 1, "reservation_id": str(uuid.uuid4())}
-    )
+    with caplog.at_level("WARNING"):
+        response = await _post_reserve(
+            {"sku": "WIDGET-1", "quantity": 1, "reservation_id": str(uuid.uuid4())}
+        )
 
     assert response.status_code == 429
     body = response.json()
     assert body["success"] is False
     assert body["status"] == 429
+    assert any("rate limit exceeded" in record.message for record in caplog.records)

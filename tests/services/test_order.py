@@ -62,50 +62,64 @@ async def test_seed_stock_sets_the_redis_counter():
 
 
 @pytest.mark.asyncio
-async def test_reserve_succeeds_and_decrements_stock():
+async def test_reserve_succeeds_and_decrements_stock(caplog):
     fake_redis = _FakeRedis()
     service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
     await service.seed_stock("WIDGET-1", 100)
 
     reservation_id = uuid.uuid4()
-    result = await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=reservation_id)
+    with caplog.at_level("INFO"):
+        result = await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=reservation_id)
 
     assert result.reservation_id == reservation_id
     assert result.sku == "WIDGET-1"
     assert result.available == 90
+    assert any(
+        "reserve held" in record.message and str(reservation_id) in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
-async def test_reserve_is_idempotent_on_retry():
+async def test_reserve_is_idempotent_on_retry(caplog):
     fake_redis = _FakeRedis()
     service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
     await service.seed_stock("WIDGET-1", 100)
 
     reservation_id = uuid.uuid4()
     first = await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=reservation_id)
-    second = await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=reservation_id)
+    with caplog.at_level("INFO"):
+        second = await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=reservation_id)
 
     assert first.available == 90
     assert second.available == 90  # not decremented twice
+    assert any(
+        "reserve idempotent replay" in record.message and str(reservation_id) in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
-async def test_reserve_unknown_sku_raises():
+async def test_reserve_unknown_sku_raises(caplog):
     fake_redis = _FakeRedis()
     service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
 
-    with pytest.raises(SkuNotFoundError):
+    with caplog.at_level("WARNING"), pytest.raises(SkuNotFoundError):
         await service.reserve(sku="NOPE", quantity=1, reservation_id=uuid.uuid4())
+
+    assert any("unknown sku=NOPE" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_reserve_insufficient_stock_raises():
+async def test_reserve_insufficient_stock_raises(caplog):
     fake_redis = _FakeRedis()
     service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
     await service.seed_stock("WIDGET-1", 5)
 
-    with pytest.raises(InsufficientStockError):
+    with caplog.at_level("INFO"), pytest.raises(InsufficientStockError):
         await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=uuid.uuid4())
+
+    assert any("insufficient stock" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio

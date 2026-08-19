@@ -1,3 +1,4 @@
+import logging
 import uuid
 from pathlib import Path
 
@@ -6,6 +7,8 @@ from redis.asyncio import Redis
 
 from order_api.core.config import get_settings
 from order_api.core.db.redis import get_redis
+
+logger = logging.getLogger("order_api.services.order")
 
 _RESERVE_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "core" / "lua" / "reserve.lua"
 
@@ -80,12 +83,34 @@ class OrderService:
         available = int(available)
 
         if status == "unknown_sku":
+            logger.warning(
+                "reserve rejected: unknown sku=%s reservation_id=%s", sku, reservation_id
+            )
             raise SkuNotFoundError(sku)
         if status == "insufficient_stock":
+            logger.info(
+                "reserve rejected: insufficient stock sku=%s requested=%d available=%d "
+                "reservation_id=%s",
+                sku,
+                quantity,
+                available,
+                reservation_id,
+            )
             raise InsufficientStockError(sku=sku, requested=quantity, available=available)
 
         if self.wait_replicas > 0:
             await self.redis.wait(self.wait_replicas, self.wait_timeout_ms)
+
+        if status == "duplicate":
+            logger.info("reserve idempotent replay: reservation_id=%s sku=%s", reservation_id, sku)
+        else:
+            logger.info(
+                "reserve held: reservation_id=%s sku=%s quantity=%d available=%d",
+                reservation_id,
+                sku,
+                quantity,
+                available,
+            )
 
         return ReservationHeld(
             reservation_id=reservation_id, sku=sku, quantity=quantity, available=available

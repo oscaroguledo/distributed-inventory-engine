@@ -68,11 +68,12 @@ async def test_health_ok_when_postgres_and_redis_are_up():
 
 
 @pytest.mark.asyncio
-async def test_health_reports_503_when_postgres_is_down():
+async def test_health_reports_503_when_postgres_is_down(caplog):
     app.dependency_overrides[get_session] = _session_fail
     app.dependency_overrides[get_redis] = _redis_ok
 
-    response = await _get("/health")
+    with caplog.at_level("WARNING"):
+        response = await _get("/health")
 
     assert response.status_code == 503
     body = response.json()
@@ -80,14 +81,16 @@ async def test_health_reports_503_when_postgres_is_down():
     assert body["data"]["order-api"] == "ok"
     assert body["data"]["postgres"] == "unreachable"
     assert body["data"]["redis"] == "ok"
+    assert any("postgres unreachable" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_health_reports_503_when_redis_is_down():
+async def test_health_reports_503_when_redis_is_down(caplog):
     app.dependency_overrides[get_session] = _session_ok
     app.dependency_overrides[get_redis] = _redis_fail
 
-    response = await _get("/health")
+    with caplog.at_level("WARNING"):
+        response = await _get("/health")
 
     assert response.status_code == 503
     body = response.json()
@@ -95,6 +98,7 @@ async def test_health_reports_503_when_redis_is_down():
     assert body["data"]["order-api"] == "ok"
     assert body["data"]["redis"] == "unreachable"
     assert body["data"]["postgres"] == "ok"
+    assert any("redis unreachable" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio

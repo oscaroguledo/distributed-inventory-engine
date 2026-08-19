@@ -1,3 +1,4 @@
+import logging
 import time
 from pathlib import Path
 
@@ -6,6 +7,8 @@ from redis.asyncio import Redis
 
 from order_api.core.config import get_settings
 from order_api.core.db.redis import get_redis
+
+logger = logging.getLogger("order_api.rate_limiter")
 
 _LUA_SCRIPT_PATH = Path(__file__).parent / "lua" / "rate_limit.lua"
 
@@ -48,6 +51,12 @@ async def enforce_rate_limit(
     request: Request, limiter: RateLimiter = Depends(get_rate_limiter)
 ) -> None:
     client_key = request.client.host if request.client else "unknown"
-    allowed, _ = await limiter.is_allowed(client_key)
+    allowed, tokens = await limiter.is_allowed(client_key)
     if not allowed:
+        logger.warning(
+            "rate limit exceeded: client=%s path=%s tokens_remaining=%.2f",
+            client_key,
+            request.url.path,
+            tokens,
+        )
         raise RateLimitExceeded()
