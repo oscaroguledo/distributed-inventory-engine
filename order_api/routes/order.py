@@ -1,9 +1,7 @@
-import uuid
-
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, Field
 
 from order_api.core.response import APIResponse, EResponse, SResponse
+from order_api.schemas.order import ReserveRequest
 from order_api.services.order import (
     InsufficientStockError,
     OrderService,
@@ -12,12 +10,6 @@ from order_api.services.order import (
 )
 
 router = APIRouter()
-
-
-class ReserveRequest(BaseModel):
-    sku: str
-    quantity: int = Field(gt=0)
-    reservation_id: uuid.UUID
 
 
 @router.post("/reserve", response_model=APIResponse[dict])
