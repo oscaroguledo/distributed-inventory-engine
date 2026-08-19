@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Response
 
+from order_api.core.rate_limiter import enforce_rate_limit
 from order_api.core.response import APIResponse, EResponse, SResponse
 from order_api.schemas.order import ReserveRequest
 from order_api.services.order import (
@@ -12,7 +13,10 @@ from order_api.services.order import (
 router = APIRouter()
 
 
-@router.post("/reserve", response_model=APIResponse[dict])
+@router.post("/reserve", 
+    response_model=APIResponse[dict], 
+    dependencies=[Depends(enforce_rate_limit)]
+    )
 async def reserve(
     payload: ReserveRequest,
     response: Response,

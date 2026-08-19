@@ -21,6 +21,10 @@ class Settings(BaseSettings):
 
     hold_ttl_seconds: int = 900
 
+    rate_limit_capacity: int = 10
+    rate_limit_refill_per_second: float = 1.0
+    rate_limit_ttl_seconds: int = 60
+
 
 @lru_cache
 def get_settings() -> Settings:

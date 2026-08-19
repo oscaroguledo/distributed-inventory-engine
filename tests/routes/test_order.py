@@ -3,6 +3,7 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from order_api.core.rate_limiter import get_rate_limiter
 from order_api.main import app
 from order_api.services.order import InsufficientStockError, SkuNotFoundError, get_order_service
 
@@ -30,10 +31,27 @@ class _InsufficientStockOrderService:
         raise InsufficientStockError(sku=sku, requested=quantity, available=1)
 
 
+class _AllowAllLimiter:
+    async def is_allowed(self, key, cost=1):
+        return True, 999.0
+
+
+class _DenyAllLimiter:
+    async def is_allowed(self, key, cost=1):
+        return False, 0.0
+
+
 @pytest.fixture(autouse=True)
 def _clear_overrides():
     yield
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _allow_rate_limit_by_default():
+    """Every test hits a real dependency chain unless overridden — without
+    this, /reserve would try to reach real Redis via enforce_rate_limit."""
+    app.dependency_overrides[get_rate_limiter] = lambda: _AllowAllLimiter()
 
 
 async def _post_reserve(payload: dict):
@@ -89,3 +107,18 @@ async def test_reserve_rejects_non_positive_quantity():
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reserve_returns_429_when_rate_limited():
+    app.dependency_overrides[get_rate_limiter] = lambda: _DenyAllLimiter()
+    app.dependency_overrides[get_order_service] = lambda: _OkOrderService()
+
+    response = await _post_reserve(
+        {"sku": "WIDGET-1", "quantity": 1, "reservation_id": str(uuid.uuid4())}
+    )
+
+    assert response.status_code == 429
+    body = response.json()
+    assert body["success"] is False
+    assert body["status"] == 429
