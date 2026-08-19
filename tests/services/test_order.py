@@ -3,6 +3,7 @@ import uuid
 import pytest
 
 from order_api.services.order import (
+    HoldNotFoundError,
     InsufficientStockError,
     OrderService,
     SkuNotFoundError,
@@ -12,35 +13,49 @@ from order_api.services.order import (
 
 class _FakeRedis:
     """Simulates just enough of Redis to test OrderService's own logic —
-    the Lua script's actual atomicity is verified live via Docker."""
+    the Lua scripts' actual atomicity is verified live via Docker."""
 
     def __init__(self):
         self.store: dict[str, int] = {}
-        self.holds: set[str] = set()
+        self.holds: dict[str, dict] = {}
         self.script_calls: list[tuple[list, list]] = []
         self.wait_calls: list[tuple[int, int]] = []
 
-    def register_script(self, _script_body):
-        async def _script(keys, args):
-            self.script_calls.append((keys, args))
-            stock_key, hold_key, _stream_key = keys
-            _sku, quantity, _reservation_id, _hold_ttl = args
-            quantity = int(quantity)
+    def register_script(self, script_body: str):
+        if "insufficient_stock" in script_body:
+            return self._reserve
+        if "not_found" in script_body:
+            return self._commit
+        raise ValueError("unrecognized script body in test fake")
 
-            if hold_key in self.holds:
-                return ["duplicate", self.store.get(stock_key, 0)]
-            if stock_key not in self.store:
-                return ["unknown_sku", 0]
+    async def _reserve(self, keys, args):
+        self.script_calls.append((keys, args))
+        stock_key, hold_key, _stream_key = keys
+        sku, quantity, _reservation_id, _hold_ttl = args
+        quantity = int(quantity)
 
-            available = self.store[stock_key]
-            if available < quantity:
-                return ["insufficient_stock", available]
+        if hold_key in self.holds:
+            return ["duplicate", self.store.get(stock_key, 0)]
+        if stock_key not in self.store:
+            return ["unknown_sku", 0]
 
-            self.store[stock_key] -= quantity
-            self.holds.add(hold_key)
-            return ["held", self.store[stock_key]]
+        available = self.store[stock_key]
+        if available < quantity:
+            return ["insufficient_stock", available]
 
-        return _script
+        self.store[stock_key] -= quantity
+        self.holds[hold_key] = {"sku": sku, "quantity": quantity}
+        return ["held", self.store[stock_key]]
+
+    async def _commit(self, keys, args):
+        self.script_calls.append((keys, args))
+        hold_key, _stream_key = keys
+
+        if hold_key not in self.holds:
+            return ["not_found", ""]
+
+        sku = self.holds.pop(hold_key)["sku"]
+        return ["committed", sku]
 
     async def set(self, key, value):
         self.store[key] = int(value)
@@ -149,6 +164,58 @@ async def test_reserve_skips_wait_when_no_replicas_configured():
     await service.reserve(sku="WIDGET-1", quantity=1, reservation_id=uuid.uuid4())
 
     assert fake_redis.wait_calls == []
+
+
+@pytest.mark.asyncio
+async def test_commit_succeeds_after_reserve(caplog):
+    fake_redis = _FakeRedis()
+    service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
+    await service.seed_stock("WIDGET-1", 100)
+
+    reservation_id = uuid.uuid4()
+    await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=reservation_id)
+
+    with caplog.at_level("INFO"):
+        result = await service.commit(reservation_id=reservation_id)
+
+    assert result.reservation_id == reservation_id
+    assert result.sku == "WIDGET-1"
+    assert f"hold:{reservation_id}" not in fake_redis.holds
+    assert any(
+        "reservation committed" in record.message and str(reservation_id) in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_commit_raises_when_no_hold_exists(caplog):
+    fake_redis = _FakeRedis()
+    service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
+
+    with caplog.at_level("WARNING"), pytest.raises(HoldNotFoundError):
+        await service.commit(reservation_id=uuid.uuid4())
+
+    assert any("commit rejected" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_commit_calls_wait_when_replicas_configured():
+    fake_redis = _FakeRedis()
+    service = OrderService(
+        redis=fake_redis,
+        hold_ttl_seconds=900,
+        stream_name="stream:x",
+        wait_replicas=1,
+        wait_timeout_ms=100,
+    )
+    await service.seed_stock("WIDGET-1", 100)
+    reservation_id = uuid.uuid4()
+    await service.reserve(sku="WIDGET-1", quantity=1, reservation_id=reservation_id)
+    fake_redis.wait_calls.clear()
+
+    await service.commit(reservation_id=reservation_id)
+
+    assert fake_redis.wait_calls == [(1, 100)]
 
 
 def test_get_order_service_builds_from_settings():

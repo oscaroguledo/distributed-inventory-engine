@@ -10,7 +10,9 @@ from order_api.core.db.redis import get_redis
 
 logger = logging.getLogger("order_api.services.order")
 
-_RESERVE_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "core" / "lua" / "reserve.lua"
+_LUA_DIR = Path(__file__).resolve().parent.parent / "core" / "lua"
+_RESERVE_SCRIPT_PATH = _LUA_DIR / "reserve.lua"
+_COMMIT_SCRIPT_PATH = _LUA_DIR / "commit.lua"
 
 
 class SkuNotFoundError(Exception):
@@ -27,6 +29,12 @@ class InsufficientStockError(Exception):
         super().__init__(
             f"insufficient stock for {sku}: requested {requested}, available {available}"
         )
+
+
+class HoldNotFoundError(Exception):
+    def __init__(self, reservation_id: uuid.UUID):
+        self.reservation_id = reservation_id
+        super().__init__(f"no active hold for reservation_id: {reservation_id}")
 
 
 class ReservationHeld:
@@ -49,6 +57,22 @@ class ReservationHeld:
         }
 
 
+class ReservationCommitted:
+    """Result of a successful commit call — not durable until the worker
+    flips the reservation's status in Postgres."""
+
+    def __init__(self, reservation_id: uuid.UUID, sku: str):
+        self.reservation_id = reservation_id
+        self.sku = sku
+
+    def to_dict(self) -> dict:
+        return {
+            "reservation_id": str(self.reservation_id),
+            "sku": self.sku,
+            "status": "committed",
+        }
+
+
 class OrderService:
     """Redis-backed reservation hot path — ORDER_LIFECYCLE.md "01 — Reserve".
     One atomic Lua script does the hold; WAIT bounds replica failover risk."""
@@ -66,12 +90,13 @@ class OrderService:
         self.stream_name = stream_name
         self.wait_replicas = wait_replicas
         self.wait_timeout_ms = wait_timeout_ms
-        self._script = redis.register_script(_RESERVE_SCRIPT_PATH.read_text())
+        self._reserve_script = redis.register_script(_RESERVE_SCRIPT_PATH.read_text())
+        self._commit_script = redis.register_script(_COMMIT_SCRIPT_PATH.read_text())
 
     async def reserve(
         self, sku: str, quantity: int, reservation_id: uuid.UUID
     ) -> ReservationHeld:
-        status, available = await self._script(
+        status, available = await self._reserve_script(
             keys=[f"stock:{sku}:available", f"hold:{reservation_id}", self.stream_name],
             args=[sku, quantity, str(reservation_id), self.hold_ttl_seconds],
         )
@@ -111,6 +136,24 @@ class OrderService:
         return ReservationHeld(
             reservation_id=reservation_id, sku=sku, quantity=quantity, available=available
         )
+
+    async def commit(self, reservation_id: uuid.UUID) -> ReservationCommitted:
+        status, sku = await self._commit_script(
+            keys=[f"hold:{reservation_id}", self.stream_name],
+            args=[str(reservation_id)],
+        )
+        status = status.decode() if isinstance(status, bytes) else status
+        sku = sku.decode() if isinstance(sku, bytes) else sku
+
+        if status == "not_found":
+            logger.warning("commit rejected: no hold for reservation_id=%s", reservation_id)
+            raise HoldNotFoundError(reservation_id)
+
+        if self.wait_replicas > 0:
+            await self.redis.wait(self.wait_replicas, self.wait_timeout_ms)
+
+        logger.info("reservation committed: reservation_id=%s sku=%s", reservation_id, sku)
+        return ReservationCommitted(reservation_id=reservation_id, sku=sku)
 
     async def seed_stock(self, sku: str, available: int) -> None:
         """Sets Redis's live counter for a SKU — bootstraps a fresh Redis;

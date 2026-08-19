@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,50 +26,75 @@ async def ensure_consumer_group(redis, stream: str, group: str) -> None:
             raise
 
 
+async def _apply_reserved(session: AsyncSession, fields: dict) -> bool:
+    reservation_id = uuid.UUID(fields["reservation_id"])
+    sku = fields["sku"]
+    quantity = int(fields["quantity"])
+
+    existing = await session.get(InventoryReservation, reservation_id)
+    if existing is not None:
+        logger.info("skipped redelivered event: reservation_id=%s sku=%s", reservation_id, sku)
+        return False
+
+    session.add(
+        InventoryReservation(id=reservation_id, sku=sku, quantity=quantity, status="held")
+    )
+    session.add(
+        StockAuditLedger(
+            reservation_id=reservation_id, sku=sku, quantity=quantity, event_type="reserved"
+        )
+    )
+
+    balance = (
+        await session.execute(
+            select(InventoryBalance).where(InventoryBalance.sku == sku).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if balance is not None:
+        balance.available -= quantity
+
+    logger.info(
+        "reserved event processed: reservation_id=%s sku=%s quantity=%d",
+        reservation_id,
+        sku,
+        quantity,
+    )
+    return True
+
+
+async def _apply_committed(session: AsyncSession, fields: dict) -> bool:
+    reservation_id = uuid.UUID(fields["reservation_id"])
+    sku = fields["sku"]
+    quantity = int(fields.get("quantity", 0))
+
+    reservation = await session.get(InventoryReservation, reservation_id)
+    if reservation is None or reservation.status != "held":
+        logger.info("skipped committed event: reservation_id=%s not held", reservation_id)
+        return False
+
+    reservation.status = "committed"
+    reservation.resolved_at = datetime.now(timezone.utc)
+    session.add(
+        StockAuditLedger(
+            reservation_id=reservation_id, sku=sku, quantity=quantity, event_type="committed"
+        )
+    )
+
+    logger.info("committed event processed: reservation_id=%s sku=%s", reservation_id, sku)
+    return True
+
+
 async def process_batch(session: AsyncSession, messages: list[tuple[str, dict]]) -> int:
-    """Persists 'reserved' events into Postgres — the async half of the
-    hold (ORDER_LIFECYCLE.md "01 — Reserve" steps 5-6)."""
+    """Persists 'reserved'/'committed' events — the async half of the order
+    lifecycle (ORDER_LIFECYCLE.md "01 — Reserve", "Commit")."""
     processed = 0
 
     for _message_id, fields in messages:
-        if fields.get("event_type") != "reserved":
-            continue
-
-        reservation_id = uuid.UUID(fields["reservation_id"])
-        sku = fields["sku"]
-        quantity = int(fields["quantity"])
-
-        existing = await session.get(InventoryReservation, reservation_id)
-        if existing is not None:
-            logger.info(
-                "skipped redelivered event: reservation_id=%s sku=%s", reservation_id, sku
-            )
-            continue
-
-        session.add(
-            InventoryReservation(id=reservation_id, sku=sku, quantity=quantity, status="held")
-        )
-        session.add(
-            StockAuditLedger(
-                reservation_id=reservation_id, sku=sku, quantity=quantity, event_type="reserved"
-            )
-        )
-
-        balance = (
-            await session.execute(
-                select(InventoryBalance).where(InventoryBalance.sku == sku).with_for_update()
-            )
-        ).scalar_one_or_none()
-        if balance is not None:
-            balance.available -= quantity
-
-        logger.info(
-            "reserved event processed: reservation_id=%s sku=%s quantity=%d",
-            reservation_id,
-            sku,
-            quantity,
-        )
-        processed += 1
+        event_type = fields.get("event_type")
+        if event_type == "reserved":
+            processed += await _apply_reserved(session, fields)
+        elif event_type == "committed":
+            processed += await _apply_committed(session, fields)
 
     await session.commit()
     return processed

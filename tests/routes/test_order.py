@@ -5,10 +5,15 @@ from httpx import ASGITransport, AsyncClient
 
 from order_api.core.rate_limiter import get_rate_limiter
 from order_api.main import app
-from order_api.services.order import InsufficientStockError, SkuNotFoundError, get_order_service
+from order_api.services.order import (
+    HoldNotFoundError,
+    InsufficientStockError,
+    SkuNotFoundError,
+    get_order_service,
+)
 
 
-class _FakeReservation:
+class _FakeResult:
     def __init__(self, **kwargs):
         self._data = kwargs
 
@@ -18,7 +23,10 @@ class _FakeReservation:
 
 class _OkOrderService:
     async def reserve(self, sku, quantity, reservation_id):
-        return _FakeReservation(id=str(reservation_id), sku=sku, quantity=quantity, status="held")
+        return _FakeResult(id=str(reservation_id), sku=sku, quantity=quantity, status="held")
+
+    async def commit(self, reservation_id):
+        return _FakeResult(reservation_id=str(reservation_id), sku="WIDGET-1", status="committed")
 
 
 class _UnknownSkuOrderService:
@@ -29,6 +37,11 @@ class _UnknownSkuOrderService:
 class _InsufficientStockOrderService:
     async def reserve(self, sku, quantity, reservation_id):
         raise InsufficientStockError(sku=sku, requested=quantity, available=1)
+
+
+class _HoldNotFoundOrderService:
+    async def commit(self, reservation_id):
+        raise HoldNotFoundError(reservation_id)
 
 
 class _AllowAllLimiter:
@@ -58,6 +71,12 @@ async def _post_reserve(payload: dict):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         return await client.post("/reserve", json=payload)
+
+
+async def _post_commit(payload: dict):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.post("/commit", json=payload)
 
 
 @pytest.mark.asyncio
@@ -124,3 +143,36 @@ async def test_reserve_returns_429_when_rate_limited(caplog):
     assert body["success"] is False
     assert body["status"] == 429
     assert any("rate limit exceeded" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_commit_succeeds():
+    app.dependency_overrides[get_order_service] = lambda: _OkOrderService()
+    reservation_id = str(uuid.uuid4())
+
+    response = await _post_commit({"reservation_id": reservation_id})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["status"] == "committed"
+
+
+@pytest.mark.asyncio
+async def test_commit_returns_404_when_hold_not_found():
+    app.dependency_overrides[get_order_service] = lambda: _HoldNotFoundOrderService()
+
+    response = await _post_commit({"reservation_id": str(uuid.uuid4())})
+
+    assert response.status_code == 404
+    assert response.json()["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_commit_returns_429_when_rate_limited():
+    app.dependency_overrides[get_rate_limiter] = lambda: _DenyAllLimiter()
+    app.dependency_overrides[get_order_service] = lambda: _OkOrderService()
+
+    response = await _post_commit({"reservation_id": str(uuid.uuid4())})
+
+    assert response.status_code == 429

@@ -55,6 +55,18 @@ def _reserved_message(reservation_id: str, sku: str = "WIDGET-1", quantity: str 
     )
 
 
+def _committed_message(reservation_id: str, sku: str = "WIDGET-1", quantity: str = "10"):
+    return (
+        "2-0",
+        {
+            "event_type": "committed",
+            "reservation_id": reservation_id,
+            "sku": sku,
+            "quantity": quantity,
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_ensure_consumer_group_creates_group():
     fake_redis = _FakeGroupRedis()
@@ -133,11 +145,11 @@ async def test_process_batch_skips_redelivered_reservation(session, seeded_balan
 
 
 @pytest.mark.asyncio
-async def test_process_batch_ignores_non_reserved_events(session):
+async def test_process_batch_ignores_unhandled_event_types(session):
     message = (
         "1-0",
         {
-            "event_type": "committed",
+            "event_type": "released",
             "reservation_id": str(uuid.uuid4()),
             "sku": "x",
             "quantity": "1",
@@ -147,3 +159,52 @@ async def test_process_batch_ignores_non_reserved_events(session):
     processed = await process_batch(session, [message])
 
     assert processed == 0
+
+
+@pytest.mark.asyncio
+async def test_process_batch_commits_a_held_reservation(session, seeded_balance, caplog):
+    reservation_id = str(uuid.uuid4())
+    await process_batch(session, [_reserved_message(reservation_id)])
+
+    with caplog.at_level("INFO"):
+        processed = await process_batch(session, [_committed_message(reservation_id)])
+
+    assert processed == 1
+
+    reservation = await session.get(InventoryReservation, uuid.UUID(reservation_id))
+    assert reservation.status == "committed"
+    assert reservation.resolved_at is not None
+
+    ledger_rows = (await session.execute(select(StockAuditLedger))).scalars().all()
+    assert len(ledger_rows) == 2  # one 'reserved' + one 'committed'
+    assert {row.event_type for row in ledger_rows} == {"reserved", "committed"}
+
+    assert any(
+        "committed event processed" in record.message and reservation_id in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_batch_skips_commit_for_unknown_reservation(session, caplog):
+    reservation_id = str(uuid.uuid4())
+
+    with caplog.at_level("INFO"):
+        processed = await process_batch(session, [_committed_message(reservation_id)])
+
+    assert processed == 0
+    assert any(
+        "skipped committed event" in record.message and reservation_id in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_batch_skips_redelivered_commit(session, seeded_balance):
+    reservation_id = str(uuid.uuid4())
+    await process_batch(session, [_reserved_message(reservation_id)])
+    await process_batch(session, [_committed_message(reservation_id)])
+
+    second_commit = await process_batch(session, [_committed_message(reservation_id)])
+
+    assert second_commit == 0
