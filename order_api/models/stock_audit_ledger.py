@@ -22,9 +22,9 @@ class StockAuditLedger(Base):
         Index("idx_ledger_sku_time", "sku", "occurred_at"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
-    )
+    # Generated client-side (not a Postgres server_default): keeps the model
+    # portable across dialects and avoids a DB-specific function dependency.
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     reservation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("inventory_reservations.id"), nullable=False
     )
