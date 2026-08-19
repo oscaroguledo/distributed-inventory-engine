@@ -82,10 +82,13 @@ async def test_ensure_consumer_group_reraises_other_errors():
 
 
 @pytest.mark.asyncio
-async def test_process_batch_creates_reservation_and_decrements_balance(session, seeded_balance):
+async def test_process_batch_creates_reservation_and_decrements_balance(
+    session, seeded_balance, caplog
+):
     reservation_id = str(uuid.uuid4())
 
-    processed = await process_batch(session, [_reserved_message(reservation_id)])
+    with caplog.at_level("INFO"):
+        processed = await process_batch(session, [_reserved_message(reservation_id)])
 
     assert processed == 1
 
@@ -100,20 +103,33 @@ async def test_process_batch_creates_reservation_and_decrements_balance(session,
     assert len(ledger_rows) == 1
     assert ledger_rows[0].event_type == "reserved"
 
+    assert any(
+        "reserved event processed" in record.message
+        and reservation_id in record.message
+        and "WIDGET-1" in record.message
+        for record in caplog.records
+    )
+
 
 @pytest.mark.asyncio
-async def test_process_batch_skips_redelivered_reservation(session, seeded_balance):
+async def test_process_batch_skips_redelivered_reservation(session, seeded_balance, caplog):
     reservation_id = str(uuid.uuid4())
     message = _reserved_message(reservation_id)
 
     first = await process_batch(session, [message])
-    second = await process_batch(session, [message])  # simulated XREADGROUP redelivery
+    with caplog.at_level("INFO"):
+        second = await process_batch(session, [message])  # simulated XREADGROUP redelivery
 
     assert first == 1
     assert second == 0
 
     await session.refresh(seeded_balance)
     assert seeded_balance.available == 90  # not decremented twice
+
+    assert any(
+        "skipped redelivered event" in record.message and reservation_id in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio

@@ -41,6 +41,9 @@ async def process_batch(session: AsyncSession, messages: list[tuple[str, dict]])
 
         existing = await session.get(InventoryReservation, reservation_id)
         if existing is not None:
+            logger.info(
+                "skipped redelivered event: reservation_id=%s sku=%s", reservation_id, sku
+            )
             continue
 
         session.add(
@@ -60,6 +63,12 @@ async def process_batch(session: AsyncSession, messages: list[tuple[str, dict]])
         if balance is not None:
             balance.available -= quantity
 
+        logger.info(
+            "reserved event processed: reservation_id=%s sku=%s quantity=%d",
+            reservation_id,
+            sku,
+            quantity,
+        )
         processed += 1
 
     await session.commit()
