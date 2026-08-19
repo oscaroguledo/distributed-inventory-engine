@@ -1,87 +1,148 @@
 import uuid
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from order_api.models.base import Base
-from order_api.models.inventory_balances import InventoryBalance
-from order_api.models.stock_audit_ledger import StockAuditLedger
-from order_api.services.order import InsufficientStockError, OrderService, SkuNotFoundError
-
-
-@pytest.fixture
-async def session():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with session_factory() as s:
-        yield s
-
-    await engine.dispose()
+from order_api.services.order import (
+    InsufficientStockError,
+    OrderService,
+    SkuNotFoundError,
+    get_order_service,
+)
 
 
-@pytest.fixture
-async def seeded_balance(session):
-    balance = InventoryBalance(sku="WIDGET-1", name="Widget", total_stock=100, available=100)
-    session.add(balance)
-    await session.commit()
-    return balance
+class _FakeRedis:
+    """Simulates just enough of Redis (register_script + set + wait) to
+    exercise OrderService's own logic. The Lua script's actual atomicity is
+    verified live via Docker, not here — see the reserve.lua comments."""
+
+    def __init__(self):
+        self.store: dict[str, int] = {}
+        self.holds: set[str] = set()
+        self.script_calls: list[tuple[list, list]] = []
+        self.wait_calls: list[tuple[int, int]] = []
+
+    def register_script(self, _script_body):
+        async def _script(keys, args):
+            self.script_calls.append((keys, args))
+            stock_key, hold_key, _stream_key = keys
+            _sku, quantity, _reservation_id, _hold_ttl = args
+            quantity = int(quantity)
+
+            if hold_key in self.holds:
+                return ["duplicate", self.store.get(stock_key, 0)]
+            if stock_key not in self.store:
+                return ["unknown_sku", 0]
+
+            available = self.store[stock_key]
+            if available < quantity:
+                return ["insufficient_stock", available]
+
+            self.store[stock_key] -= quantity
+            self.holds.add(hold_key)
+            return ["held", self.store[stock_key]]
+
+        return _script
+
+    async def set(self, key, value):
+        self.store[key] = int(value)
+
+    async def wait(self, numreplicas, timeout):
+        self.wait_calls.append((numreplicas, timeout))
+        return numreplicas
 
 
 @pytest.mark.asyncio
-async def test_reserve_decrements_balance_and_creates_records(session, seeded_balance):
-    service = OrderService(session)
-    reservation_id = uuid.uuid4()
+async def test_seed_stock_sets_the_redis_counter():
+    fake_redis = _FakeRedis()
+    service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
 
-    reservation = await service.reserve(
-        sku="WIDGET-1", quantity=10, reservation_id=reservation_id
-    )
+    await service.seed_stock("WIDGET-1", 42)
 
-    assert reservation.status == "held"
-    assert reservation.quantity == 10
-
-    await session.refresh(seeded_balance)
-    assert seeded_balance.available == 90
-
-    ledger_rows = (await session.execute(select(StockAuditLedger))).scalars().all()
-    assert len(ledger_rows) == 1
-    assert ledger_rows[0].event_type == "reserved"
-    assert ledger_rows[0].reservation_id == reservation_id
+    assert fake_redis.store["stock:WIDGET-1:available"] == 42
 
 
 @pytest.mark.asyncio
-async def test_reserve_is_idempotent_on_retry(session, seeded_balance):
-    service = OrderService(session)
-    reservation_id = uuid.uuid4()
+async def test_reserve_succeeds_and_decrements_stock():
+    fake_redis = _FakeRedis()
+    service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
+    await service.seed_stock("WIDGET-1", 100)
 
+    reservation_id = uuid.uuid4()
+    result = await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=reservation_id)
+
+    assert result.reservation_id == reservation_id
+    assert result.sku == "WIDGET-1"
+    assert result.available == 90
+
+
+@pytest.mark.asyncio
+async def test_reserve_is_idempotent_on_retry():
+    fake_redis = _FakeRedis()
+    service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
+    await service.seed_stock("WIDGET-1", 100)
+
+    reservation_id = uuid.uuid4()
     first = await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=reservation_id)
     second = await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=reservation_id)
 
-    assert first.id == second.id
-
-    await session.refresh(seeded_balance)
-    assert seeded_balance.available == 90  # not decremented twice
+    assert first.available == 90
+    assert second.available == 90  # not decremented twice
 
 
 @pytest.mark.asyncio
-async def test_reserve_unknown_sku_raises(session):
-    service = OrderService(session)
+async def test_reserve_unknown_sku_raises():
+    fake_redis = _FakeRedis()
+    service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
 
     with pytest.raises(SkuNotFoundError):
         await service.reserve(sku="NOPE", quantity=1, reservation_id=uuid.uuid4())
 
 
 @pytest.mark.asyncio
-async def test_reserve_insufficient_stock_raises_without_mutating_balance(
-    session, seeded_balance
-):
-    service = OrderService(session)
+async def test_reserve_insufficient_stock_raises():
+    fake_redis = _FakeRedis()
+    service = OrderService(redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x")
+    await service.seed_stock("WIDGET-1", 5)
 
     with pytest.raises(InsufficientStockError):
-        await service.reserve(sku="WIDGET-1", quantity=999, reservation_id=uuid.uuid4())
+        await service.reserve(sku="WIDGET-1", quantity=10, reservation_id=uuid.uuid4())
 
-    await session.refresh(seeded_balance)
-    assert seeded_balance.available == 100
+
+@pytest.mark.asyncio
+async def test_reserve_calls_wait_when_replicas_configured():
+    fake_redis = _FakeRedis()
+    service = OrderService(
+        redis=fake_redis,
+        hold_ttl_seconds=900,
+        stream_name="stream:x",
+        wait_replicas=1,
+        wait_timeout_ms=100,
+    )
+    await service.seed_stock("WIDGET-1", 100)
+
+    await service.reserve(sku="WIDGET-1", quantity=1, reservation_id=uuid.uuid4())
+
+    assert fake_redis.wait_calls == [(1, 100)]
+
+
+@pytest.mark.asyncio
+async def test_reserve_skips_wait_when_no_replicas_configured():
+    fake_redis = _FakeRedis()
+    service = OrderService(
+        redis=fake_redis, hold_ttl_seconds=900, stream_name="stream:x", wait_replicas=0
+    )
+    await service.seed_stock("WIDGET-1", 100)
+
+    await service.reserve(sku="WIDGET-1", quantity=1, reservation_id=uuid.uuid4())
+
+    assert fake_redis.wait_calls == []
+
+
+def test_get_order_service_builds_from_settings():
+    fake_redis = _FakeRedis()
+
+    service = get_order_service(redis=fake_redis)
+
+    assert isinstance(service, OrderService)
+    assert service.hold_ttl_seconds > 0
+    assert service.stream_name

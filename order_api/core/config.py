@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     hold_ttl_seconds: int = 900
+    # Local Docker Compose runs a single Redis, no replica — 0 means WAIT is
+    # skipped entirely. Set >0 once a real Sentinel/replica topology exists.
+    redis_wait_replicas: int = 0
+    redis_wait_timeout_ms: int = 200
+
+    stream_inventory_events: str = "stream:inventory_events"
+    consumer_group_inventory_sync: str = "inventory_sync_workers"
 
     rate_limit_capacity: int = 10
     rate_limit_refill_per_second: float = 1.0
