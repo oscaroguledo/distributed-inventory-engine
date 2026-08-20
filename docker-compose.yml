@@ -86,5 +86,24 @@ services:
       redis:
         condition: service_healthy
 
+  watchdog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "order_api.watchdog"]
+    environment:
+      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE}
+      POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL}
+      WATCHDOG_POLL_INTERVAL_SECONDS: ${WATCHDOG_POLL_INTERVAL_SECONDS}
+      WATCHDOG_CONFIRM_PASSES: ${WATCHDOG_CONFIRM_PASSES}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
