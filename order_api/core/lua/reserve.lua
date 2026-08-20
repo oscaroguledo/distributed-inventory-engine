@@ -1,5 +1,6 @@
--- Atomic reserve (idempotency+stock check+decrement+hold+stream, one op).
--- KEYS=[stock,hold,stream]; ARGV=[sku,qty,reservation_id,hold_ttl].
+-- Atomic reserve (idempotency+stock check+decrement+hold+meta+stream, one op).
+-- KEYS=[stock,hold,stream]; ARGV=[sku,qty,id,hold_ttl]. holdmeta:{id}:{sku}:{qty}
+-- lets the sweeper recover sku/qty once the hold hash's TTL wipes it.
 
 local stock_key = KEYS[1]
 local hold_key = KEYS[2]
@@ -30,6 +31,7 @@ end
 redis.call("DECRBY", stock_key, quantity)
 redis.call("HSET", hold_key, "sku", sku, "quantity", quantity, "status", "held")
 redis.call("EXPIRE", hold_key, hold_ttl)
+redis.call("SET", "holdmeta:" .. reservation_id .. ":" .. sku .. ":" .. quantity, "1", "EX", hold_ttl)
 redis.call(
     "XADD", stream_key, "*",
     "event_type", "reserved",
