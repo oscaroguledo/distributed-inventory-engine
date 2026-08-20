@@ -28,6 +28,9 @@ class _OkOrderService:
     async def commit(self, reservation_id):
         return _FakeResult(reservation_id=str(reservation_id), sku="WIDGET-1", status="committed")
 
+    async def release(self, reservation_id):
+        return _FakeResult(reservation_id=str(reservation_id), sku="WIDGET-1", status="released")
+
 
 class _UnknownSkuOrderService:
     async def reserve(self, sku, quantity, reservation_id):
@@ -41,6 +44,9 @@ class _InsufficientStockOrderService:
 
 class _HoldNotFoundOrderService:
     async def commit(self, reservation_id):
+        raise HoldNotFoundError(reservation_id)
+
+    async def release(self, reservation_id):
         raise HoldNotFoundError(reservation_id)
 
 
@@ -77,6 +83,12 @@ async def _post_commit(payload: dict):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         return await client.post("/commit", json=payload)
+
+
+async def _post_release(payload: dict):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.post("/release", json=payload)
 
 
 @pytest.mark.asyncio
@@ -176,3 +188,26 @@ async def test_commit_returns_429_when_rate_limited():
     response = await _post_commit({"reservation_id": str(uuid.uuid4())})
 
     assert response.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_release_succeeds():
+    app.dependency_overrides[get_order_service] = lambda: _OkOrderService()
+    reservation_id = str(uuid.uuid4())
+
+    response = await _post_release({"reservation_id": reservation_id})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["status"] == "released"
+
+
+@pytest.mark.asyncio
+async def test_release_returns_404_when_hold_not_found():
+    app.dependency_overrides[get_order_service] = lambda: _HoldNotFoundOrderService()
+
+    response = await _post_release({"reservation_id": str(uuid.uuid4())})
+
+    assert response.status_code == 404
+    assert response.json()["success"] is False
