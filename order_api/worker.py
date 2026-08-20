@@ -84,9 +84,39 @@ async def _apply_committed(session: AsyncSession, fields: dict) -> bool:
     return True
 
 
+async def _apply_released(session: AsyncSession, fields: dict) -> bool:
+    reservation_id = uuid.UUID(fields["reservation_id"])
+    sku = fields["sku"]
+    quantity = int(fields.get("quantity", 0))
+
+    reservation = await session.get(InventoryReservation, reservation_id)
+    if reservation is None or reservation.status != "held":
+        logger.info("skipped released event: reservation_id=%s not held", reservation_id)
+        return False
+
+    reservation.status = "released"
+    reservation.resolved_at = datetime.now(timezone.utc)
+    session.add(
+        StockAuditLedger(
+            reservation_id=reservation_id, sku=sku, quantity=quantity, event_type="released"
+        )
+    )
+
+    balance = (
+        await session.execute(
+            select(InventoryBalance).where(InventoryBalance.sku == sku).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if balance is not None:
+        balance.available += quantity
+
+    logger.info("released event processed: reservation_id=%s sku=%s", reservation_id, sku)
+    return True
+
+
 async def process_batch(session: AsyncSession, messages: list[tuple[str, dict]]) -> int:
-    """Persists 'reserved'/'committed' events — the async half of the order
-    lifecycle (ORDER_LIFECYCLE.md "01 — Reserve", "Commit")."""
+    """Persists 'reserved'/'committed'/'released' events — the async half of
+    the order lifecycle (ORDER_LIFECYCLE.md "01 — Reserve", "Commit", "Release")."""
     processed = 0
 
     for _message_id, fields in messages:
@@ -95,6 +125,8 @@ async def process_batch(session: AsyncSession, messages: list[tuple[str, dict]])
             processed += await _apply_reserved(session, fields)
         elif event_type == "committed":
             processed += await _apply_committed(session, fields)
+        elif event_type == "released":
+            processed += await _apply_released(session, fields)
 
     await session.commit()
     return processed
