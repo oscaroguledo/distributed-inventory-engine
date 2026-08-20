@@ -1,5 +1,5 @@
 -- Atomic release: lookup hold, restore stock, delete ticket, XADD released.
--- KEYS=[hold,stream]; ARGV=[reservation_id]. Returns {status, sku, quantity}.
+-- KEYS=[hold,stream]; ARGV=[reservation_id]. Returns {status, sku, quantity, available}.
 -- stock key isn't known until the hold is read, so it's built here rather
 -- than declared upfront in KEYS.
 
@@ -8,7 +8,7 @@ local stream_key = KEYS[2]
 local reservation_id = ARGV[1]
 
 if redis.call("EXISTS", hold_key) == 0 then
-    return {"not_found", "", 0}
+    return {"not_found", "", 0, 0}
 end
 
 local sku = redis.call("HGET", hold_key, "sku")
