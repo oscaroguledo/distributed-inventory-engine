@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     rate_limit_refill_per_second: float = 1.0
     rate_limit_ttl_seconds: int = 60
 
+    watchdog_poll_interval_seconds: int = 30
+    # Requires drift to persist across this many consecutive polls before
+    # rebuilding Redis — filters out normal worker flush lag, not just noise.
+    watchdog_confirm_passes: int = 2
+
 
 @lru_cache
 def get_settings() -> Settings:
