@@ -59,5 +59,17 @@ services:
       redis:
         condition: service_healthy
 
+  sweeper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "order_api.sweeper"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL}
+    depends_on:
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     stream_inventory_events: str = "stream:inventory_events"
     consumer_group_inventory_sync: str = "inventory_sync_workers"
 
+    # Guards a sweep against double-restoring stock when more than one
+    # sweeper replica is running (expired-key pub/sub fans out to all of them).
+    sweep_claim_ttl_seconds: int = 30
+
     rate_limit_capacity: int = 10
     rate_limit_refill_per_second: float = 1.0
     rate_limit_ttl_seconds: int = 60
