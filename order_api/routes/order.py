@@ -61,9 +61,9 @@ async def release(
     order_service: OrderService = Depends(get_order_service),
 ) -> APIResponse:
     try:
-        pass
-    except Exception as exc:
-        response.status_code = 400
-        return EResponse(message=str(exc), status=400)
-    response.status_code = 201
-    return SResponse(data=release.to_dict(), message="Reservation cancelled", status=200)
+        result = await order_service.release(reservation_id=payload.reservation_id)
+    except HoldNotFoundError as exc:
+        response.status_code = 404
+        return EResponse(message=str(exc), status=404)
+
+    return SResponse(data=result.to_dict(), message="Reservation cancelled", status=200)
