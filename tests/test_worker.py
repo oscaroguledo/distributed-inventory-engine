@@ -4,11 +4,13 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from order_api import worker
+from order_api.core.config import get_settings
 from order_api.models.base import Base
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.inventory_reservations import InventoryReservation
 from order_api.models.stock_audit_ledger import StockAuditLedger
-from order_api.worker import ensure_consumer_group, process_batch
+from order_api.worker import ensure_consumer_group, process_batch, run_once
 
 
 @pytest.fixture
@@ -41,6 +43,21 @@ class _FakeGroupRedis:
         self.calls.append((stream, group, id, mkstream))
         if self.raise_error:
             raise self.raise_error
+
+
+class _FakeStreamRedis:
+    """Simulates just enough of Redis for run_once — XREADGROUP/XACK — the
+    real streaming semantics are exercised live via Docker, not here."""
+
+    def __init__(self, response):
+        self._response = response
+        self.xack_calls: list[tuple] = []
+
+    async def xreadgroup(self, group, consumer_name, streams, count, block):
+        return self._response
+
+    async def xack(self, stream, group, *message_ids):
+        self.xack_calls.append((stream, group, message_ids))
 
 
 def _reserved_message(reservation_id: str, sku: str = "WIDGET-1", quantity: str = "10"):
@@ -274,3 +291,47 @@ async def test_process_batch_skips_redelivered_release(session, seeded_balance):
     assert second_release == 0
     await session.refresh(seeded_balance)
     assert seeded_balance.available == 100  # not restored twice
+
+
+@pytest.mark.asyncio
+async def test_run_once_returns_zero_when_no_messages(monkeypatch):
+    monkeypatch.setattr(worker, "redis_client", _FakeStreamRedis(response=None))
+
+    processed = await run_once("consumer-1")
+
+    assert processed == 0
+
+
+@pytest.mark.asyncio
+async def test_run_once_processes_a_batch_and_acks_it(monkeypatch):
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as seed_session:
+        seed_session.add(
+            InventoryBalance(sku="WIDGET-1", name="Widget", total_stock=100, available=100)
+        )
+        await seed_session.commit()
+
+    settings = get_settings()
+    reservation_id = str(uuid.uuid4())
+    fake_redis = _FakeStreamRedis(
+        response=[(settings.stream_inventory_events, [_reserved_message(reservation_id)])]
+    )
+    monkeypatch.setattr(worker, "redis_client", fake_redis)
+    monkeypatch.setattr(worker, "AsyncSessionLocal", session_factory)
+
+    processed = await run_once("consumer-1")
+
+    assert processed == 1
+    assert fake_redis.xack_calls == [
+        (settings.stream_inventory_events, settings.consumer_group_inventory_sync, ("1-0",))
+    ]
+
+    async with session_factory() as check_session:
+        reservation = await check_session.get(InventoryReservation, uuid.UUID(reservation_id))
+        assert reservation.status == "held"
+
+    await engine.dispose()

@@ -103,6 +103,7 @@ async def test_reserve_succeeds_and_decrements_stock(caplog):
     assert result.reservation_id == reservation_id
     assert result.sku == "WIDGET-1"
     assert result.available == 90
+    assert result.to_dict()["status"] == "held"
     assert any(
         "reserve held" in record.message and str(reservation_id) in record.message
         for record in caplog.records
@@ -195,6 +196,7 @@ async def test_commit_succeeds_after_reserve(caplog):
 
     assert result.reservation_id == reservation_id
     assert result.sku == "WIDGET-1"
+    assert result.to_dict()["status"] == "committed"
     assert f"hold:{reservation_id}" not in fake_redis.holds
     assert any(
         "reservation committed" in record.message and str(reservation_id) in record.message
