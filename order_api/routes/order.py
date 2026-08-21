@@ -54,7 +54,9 @@ async def commit(
     return SResponse(data=result.to_dict(), message="Order confirmed", status=200)
 
 
-@router.post("/release", response_model=APIResponse[dict])
+@router.post(
+    "/release", response_model=APIResponse[dict], dependencies=[Depends(enforce_rate_limit)]
+)
 async def release(
     payload: ReleaseRequest,
     response: Response,
