@@ -11,12 +11,13 @@ from order_api.core.config import get_settings
 
 settings = get_settings()
 
-# Pool sized small and deliberate per replica — see SYSTEM_DESIGN.md's
-# "Pooled Postgres connections" section on why this can't just be "big".
+# Pool sized small and deliberate per replica (SYSTEM_DESIGN.md "Pooled
+# Postgres connections"). Both connect_args disabled for pgbouncer transaction pooling.
 engine: AsyncEngine = create_async_engine(
     settings.postgres_url,
     pool_size=settings.postgres_pool_size,
     max_overflow=settings.postgres_max_overflow,
+    connect_args={"statement_cache_size": 0, "prepared_statement_cache_size": 0},
 )
 
 AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(

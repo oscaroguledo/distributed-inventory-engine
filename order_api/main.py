@@ -11,6 +11,7 @@ from order_api.core.response import EResponse
 from order_api.models import (  # noqa: F401
     inventory_balances,
     inventory_reservations,
+    reconciliation_log,
     stock_audit_ledger,
 )
 from order_api.models.base import Base

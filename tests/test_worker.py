@@ -46,15 +46,19 @@ class _FakeGroupRedis:
 
 
 class _FakeStreamRedis:
-    """Simulates just enough of Redis for run_once — XREADGROUP/XACK — the
-    real streaming semantics are exercised live via Docker, not here."""
+    """Simulates just enough of Redis for run_once — XAUTOCLAIM/XREADGROUP/
+    XACK — the real streaming semantics are exercised live via Docker."""
 
-    def __init__(self, response):
+    def __init__(self, response, claimed=None):
         self._response = response
+        self._claimed = claimed or []
         self.xack_calls: list[tuple] = []
 
     async def xreadgroup(self, group, consumer_name, streams, count, block):
         return self._response
+
+    async def xautoclaim(self, name, groupname, consumername, min_idle_time, start_id):
+        return "0-0", self._claimed, []
 
     async def xack(self, stream, group, *message_ids):
         self.xack_calls.append((stream, group, message_ids))
@@ -129,9 +133,10 @@ async def test_process_batch_creates_reservation_and_decrements_balance(
     reservation_id = str(uuid.uuid4())
 
     with caplog.at_level("INFO"):
-        processed = await process_batch(session, [_reserved_message(reservation_id)])
+        processed, ack_ids = await process_batch(session, [_reserved_message(reservation_id)])
 
     assert processed == 1
+    assert ack_ids == ["1-0"]
 
     reservation = await session.get(InventoryReservation, uuid.UUID(reservation_id))
     assert reservation is not None
@@ -157,12 +162,13 @@ async def test_process_batch_skips_redelivered_reservation(session, seeded_balan
     reservation_id = str(uuid.uuid4())
     message = _reserved_message(reservation_id)
 
-    first = await process_batch(session, [message])
+    first, _ = await process_batch(session, [message])
     with caplog.at_level("INFO"):
-        second = await process_batch(session, [message])  # simulated XREADGROUP redelivery
+        second, ack_ids = await process_batch(session, [message])  # simulated redelivery
 
     assert first == 1
     assert second == 0
+    assert ack_ids == ["1-0"]  # a redelivered duplicate is still safe to ack
 
     await session.refresh(seeded_balance)
     assert seeded_balance.available == 90  # not decremented twice
@@ -185,9 +191,10 @@ async def test_process_batch_ignores_unhandled_event_types(session):
         },
     )
 
-    processed = await process_batch(session, [message])
+    processed, ack_ids = await process_batch(session, [message])
 
     assert processed == 0
+    assert ack_ids == ["1-0"]
 
 
 @pytest.mark.asyncio
@@ -196,9 +203,10 @@ async def test_process_batch_commits_a_held_reservation(session, seeded_balance,
     await process_batch(session, [_reserved_message(reservation_id)])
 
     with caplog.at_level("INFO"):
-        processed = await process_batch(session, [_committed_message(reservation_id)])
+        processed, ack_ids = await process_batch(session, [_committed_message(reservation_id)])
 
     assert processed == 1
+    assert ack_ids == ["2-0"]
 
     reservation = await session.get(InventoryReservation, uuid.UUID(reservation_id))
     assert reservation.status == "committed"
@@ -215,15 +223,18 @@ async def test_process_batch_commits_a_held_reservation(session, seeded_balance,
 
 
 @pytest.mark.asyncio
-async def test_process_batch_skips_commit_for_unknown_reservation(session, caplog):
+async def test_process_batch_defers_commit_when_reserve_not_visible(session, caplog):
+    """Not the same as "unknown forever" — another worker's batch holding the
+    reserve may just not have committed yet, so this must not be acked."""
     reservation_id = str(uuid.uuid4())
 
     with caplog.at_level("INFO"):
-        processed = await process_batch(session, [_committed_message(reservation_id)])
+        processed, ack_ids = await process_batch(session, [_committed_message(reservation_id)])
 
     assert processed == 0
+    assert ack_ids == []
     assert any(
-        "skipped committed event" in record.message and reservation_id in record.message
+        "deferring committed event" in record.message and reservation_id in record.message
         for record in caplog.records
     )
 
@@ -234,9 +245,12 @@ async def test_process_batch_skips_redelivered_commit(session, seeded_balance):
     await process_batch(session, [_reserved_message(reservation_id)])
     await process_batch(session, [_committed_message(reservation_id)])
 
-    second_commit = await process_batch(session, [_committed_message(reservation_id)])
+    second_processed, second_ack_ids = await process_batch(
+        session, [_committed_message(reservation_id)]
+    )
 
-    assert second_commit == 0
+    assert second_processed == 0
+    assert second_ack_ids == ["2-0"]  # already committed — genuinely safe to ack
 
 
 @pytest.mark.asyncio
@@ -245,9 +259,10 @@ async def test_process_batch_releases_a_held_reservation(session, seeded_balance
     await process_batch(session, [_reserved_message(reservation_id)])
 
     with caplog.at_level("INFO"):
-        processed = await process_batch(session, [_released_message(reservation_id)])
+        processed, ack_ids = await process_batch(session, [_released_message(reservation_id)])
 
     assert processed == 1
+    assert ack_ids == ["3-0"]
 
     reservation = await session.get(InventoryReservation, uuid.UUID(reservation_id))
     assert reservation.status == "released"
@@ -267,15 +282,16 @@ async def test_process_batch_releases_a_held_reservation(session, seeded_balance
 
 
 @pytest.mark.asyncio
-async def test_process_batch_skips_release_for_unknown_reservation(session, caplog):
+async def test_process_batch_defers_release_when_reserve_not_visible(session, caplog):
     reservation_id = str(uuid.uuid4())
 
     with caplog.at_level("INFO"):
-        processed = await process_batch(session, [_released_message(reservation_id)])
+        processed, ack_ids = await process_batch(session, [_released_message(reservation_id)])
 
     assert processed == 0
+    assert ack_ids == []
     assert any(
-        "skipped released event" in record.message and reservation_id in record.message
+        "deferring released event" in record.message and reservation_id in record.message
         for record in caplog.records
     )
 
@@ -286,9 +302,12 @@ async def test_process_batch_skips_redelivered_release(session, seeded_balance):
     await process_batch(session, [_reserved_message(reservation_id)])
     await process_batch(session, [_released_message(reservation_id)])
 
-    second_release = await process_batch(session, [_released_message(reservation_id)])
+    second_processed, second_ack_ids = await process_batch(
+        session, [_released_message(reservation_id)]
+    )
 
-    assert second_release == 0
+    assert second_processed == 0
+    assert second_ack_ids == ["3-0"]  # already released — genuinely safe to ack
     await session.refresh(seeded_balance)
     assert seeded_balance.available == 100  # not restored twice
 
@@ -333,5 +352,45 @@ async def test_run_once_processes_a_batch_and_acks_it(monkeypatch):
     async with session_factory() as check_session:
         reservation = await check_session.get(InventoryReservation, uuid.UUID(reservation_id))
         assert reservation.status == "held"
+
+
+@pytest.mark.asyncio
+async def test_run_once_processes_reclaimed_messages_before_new_ones(monkeypatch):
+    """A commit deferred by another worker's not-yet-visible reserve gets a
+    second chance via xautoclaim, not lost forever."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    reservation_id = str(uuid.uuid4())
+    async with session_factory() as seed_session:
+        seed_session.add(
+            InventoryBalance(sku="WIDGET-1", name="Widget", total_stock=100, available=90)
+        )
+        seed_session.add(
+            InventoryReservation(
+                id=uuid.UUID(reservation_id), sku="WIDGET-1", quantity=10, status="held"
+            )
+        )
+        await seed_session.commit()
+
+    settings = get_settings()
+    fake_redis = _FakeStreamRedis(
+        response=None, claimed=[_committed_message(reservation_id)]
+    )
+    monkeypatch.setattr(worker, "redis_client", fake_redis)
+    monkeypatch.setattr(worker, "AsyncSessionLocal", session_factory)
+
+    processed = await run_once("consumer-1")
+
+    assert processed == 1
+    assert fake_redis.xack_calls == [
+        (settings.stream_inventory_events, settings.consumer_group_inventory_sync, ("2-0",))
+    ]
+
+    async with session_factory() as check_session:
+        reservation = await check_session.get(InventoryReservation, uuid.UUID(reservation_id))
+        assert reservation.status == "committed"
 
     await engine.dispose()

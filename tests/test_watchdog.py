@@ -1,8 +1,10 @@
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from order_api.models.base import Base
 from order_api.models.inventory_balances import InventoryBalance
+from order_api.models.reconciliation_log import ReconciliationLog
 from order_api.watchdog import ReconciliationWatchdog
 
 
@@ -95,6 +97,27 @@ async def test_run_once_rebuilds_after_confirm_passes(session_factory, caplog):
 
 
 @pytest.mark.asyncio
+async def test_run_once_records_a_durable_reconciliation_log_entry(session_factory):
+    await _seed_balance(session_factory, "WIDGET-1", available=90)
+    fake_redis = _FakeRedis({"stock:WIDGET-1:available": 85})
+    watchdog = ReconciliationWatchdog(
+        redis=fake_redis, session_factory=session_factory, confirm_passes=2
+    )
+
+    await watchdog.run_once()
+    await watchdog.run_once()  # confirm_passes reached — triggers the rebuild
+
+    async with session_factory() as session:
+        rows = (await session.execute(select(ReconciliationLog))).scalars().all()
+
+    assert len(rows) == 1
+    assert rows[0].sku == "WIDGET-1"
+    assert rows[0].redis_available == 85
+    assert rows[0].postgres_available == 90
+    assert rows[0].drift == -5
+
+
+@pytest.mark.asyncio
 async def test_run_once_resets_streak_when_drift_resolves(session_factory):
     await _seed_balance(session_factory, "WIDGET-1", available=90)
     fake_redis = _FakeRedis({"stock:WIDGET-1:available": 85})
@@ -125,6 +148,10 @@ async def test_run_once_treats_missing_redis_key_as_drift(session_factory):
 
     assert rebuilt == {"WIDGET-1": -90}
     assert fake_redis.set_calls == [("stock:WIDGET-1:available", 90)]
+
+    async with session_factory() as session:
+        rows = (await session.execute(select(ReconciliationLog))).scalars().all()
+    assert rows[0].redis_available == 0  # None coerced to 0, not left null
 
 
 @pytest.mark.asyncio

@@ -99,7 +99,10 @@ async def run() -> None:  # pragma: no cover -- infinite pub/sub loop, verified 
     async for message in pubsub.listen():
         if message["type"] != "pmessage":
             continue
-        await sweeper.handle_expired_key(message["data"])
+        try:
+            await sweeper.handle_expired_key(message["data"])
+        except Exception:
+            logger.exception("sweep failed for key=%s", message["data"])
 
 
 if __name__ == "__main__":  # pragma: no cover

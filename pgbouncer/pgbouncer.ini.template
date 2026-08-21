@@ -1,0 +1,19 @@
+[databases]
+; the app-facing leg trusts the internal network, but pgbouncer still
+; needs a real credential to authenticate itself to the postgres backend.
+${POSTGRES_DB} = host=postgres port=5432 dbname=${POSTGRES_DB} user=${POSTGRES_USER} password=${POSTGRES_PASSWORD}
+
+[pgbouncer]
+listen_addr = 0.0.0.0
+listen_port = 6432
+; internal Docker network only — no host port is published for this
+; service, so trust auth doesn't widen the real attack surface.
+auth_type = trust
+auth_file = /etc/pgbouncer/userlist.txt
+pool_mode = transaction
+max_client_conn = ${PGBOUNCER_MAX_CLIENT_CONN}
+default_pool_size = ${PGBOUNCER_DEFAULT_POOL_SIZE}
+; asyncpg's statement_cache_size=0 alone isn't sufficient — a handed-back
+; backend connection can still carry a stale prepared statement for the next client.
+server_reset_query = DISCARD ALL
+server_reset_query_always = 1

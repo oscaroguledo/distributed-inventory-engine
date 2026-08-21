@@ -50,3 +50,18 @@ Table stock_audit_ledger {
 
   Note: 'Append-only. Never UPDATE or DELETE — this is what rebuilds the other two tables (or Redis) from scratch if they ever get corrupted.'
 }
+
+Table reconciliation_log {
+  id uuid [pk, note: 'generated client-side (uuid4), not a DB server_default']
+  sku text [not null, ref: > inventory_balances.sku]
+  redis_available integer [not null, note: 'the stale/lost value Redis had before rebuild']
+  postgres_available integer [not null, note: 'the authoritative value Redis was rebuilt to']
+  drift integer [not null, note: 'redis_available - postgres_available']
+  occurred_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (sku, occurred_at) [name: 'idx_reconciliation_log_sku_time']
+  }
+
+  Note: 'Append-only. Durable record of every time the reconciliation watchdog rebuilt Redis from Postgres — turns a self-healed drift incident into an auditable one instead of a silent log line.'
+}
