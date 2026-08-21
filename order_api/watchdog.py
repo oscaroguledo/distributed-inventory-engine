@@ -88,7 +88,10 @@ async def run() -> None:  # pragma: no cover -- infinite poll loop, verified liv
     )
 
     while True:
-        await watchdog.run_once()
+        try:
+            await watchdog.run_once()
+        except Exception:
+            logger.exception("watchdog poll failed, retrying next interval")
         await asyncio.sleep(settings.watchdog_poll_interval_seconds)
 
 

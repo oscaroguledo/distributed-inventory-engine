@@ -165,9 +165,12 @@ async def run() -> None:  # pragma: no cover -- infinite poll loop, verified liv
     logger.info("inventory sync worker started, consumer=%s", consumer_name)
 
     while True:
-        processed = await run_once(consumer_name)
-        if processed:
-            logger.info("processed %d event(s)", processed)
+        try:
+            processed = await run_once(consumer_name)
+            if processed:
+                logger.info("processed %d event(s)", processed)
+        except Exception:
+            logger.exception("worker batch failed, retrying next poll")
 
 
 if __name__ == "__main__":  # pragma: no cover
