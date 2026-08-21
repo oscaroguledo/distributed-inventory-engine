@@ -20,9 +20,10 @@ from order_api.models.stock_audit_ledger import StockAuditLedger
 TOTAL_STOCK = 100
 TOTAL_REQUESTS = 5000
 CONCURRENCY = 200
-RESERVE_WEIGHT = 0.70
-COMMIT_WEIGHT = 0.15
-# remainder (0.15) is release
+RESERVE_WEIGHT = 0.85
+# low: commit permanently retires a unit — keeps the pool contended for
+# the whole run instead of fully committed away early. rest (0.12) is release.
+COMMIT_WEIGHT = 0.03
 
 CONVERGENCE_TIMEOUT_SECONDS = 20
 
