@@ -25,15 +25,38 @@ services:
       timeout: 5s
       retries: 10
 
+  pgbouncer:
+    build:
+      context: ./pgbouncer
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGBOUNCER_MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN}
+      PGBOUNCER_DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "6432"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   order_api:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     environment:
       # postgres/redis hostnames stay literal — this is the internal Docker
       # network address, not the host-facing one in .env's own POSTGRES_URL
       # or REDIS_URL (those use localhost + the remapped host ports instead).
-      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Routed through pgbouncer, not straight to postgres — see SYSTEM_DESIGN.md
+      # "Pooled Postgres connections" on why a per-replica pool alone doesn't scale.
+      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}
       POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE}
       POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW}
       REDIS_URL: redis://redis:6379/0
@@ -48,7 +71,7 @@ services:
     ports:
       - "${ORDER_API_PORT}:8000"
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -66,8 +89,9 @@ services:
       context: .
       dockerfile: Dockerfile
     command: ["python", "-m", "order_api.worker"]
+    restart: unless-stopped
     environment:
-      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}
       POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE}
       POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW}
       REDIS_URL: redis://redis:6379/0
@@ -75,7 +99,7 @@ services:
       STREAM_INVENTORY_EVENTS: ${STREAM_INVENTORY_EVENTS}
       CONSUMER_GROUP_INVENTORY_SYNC: ${CONSUMER_GROUP_INVENTORY_SYNC}
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -87,6 +111,7 @@ services:
       context: .
       dockerfile: Dockerfile
     command: ["python", "-m", "order_api.sweeper"]
+    restart: unless-stopped
     environment:
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: ${LOG_LEVEL}
@@ -101,8 +126,9 @@ services:
       context: .
       dockerfile: Dockerfile
     command: ["python", "-m", "order_api.watchdog"]
+    restart: unless-stopped
     environment:
-      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}
       POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE}
       POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW}
       REDIS_URL: redis://redis:6379/0
@@ -110,7 +136,7 @@ services:
       WATCHDOG_POLL_INTERVAL_SECONDS: ${WATCHDOG_POLL_INTERVAL_SECONDS}
       WATCHDOG_CONFIRM_PASSES: ${WATCHDOG_CONFIRM_PASSES}
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
