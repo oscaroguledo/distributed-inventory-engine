@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from order_api import worker
 from order_api.core.config import get_settings
+from order_api.core.metrics import WORKER_CONSUMER_GROUP_PENDING
 from order_api.models.base import Base
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.inventory_reservations import InventoryReservation
@@ -49,9 +50,10 @@ class _FakeStreamRedis:
     """Simulates just enough of Redis for run_once — XAUTOCLAIM/XREADGROUP/
     XACK — the real streaming semantics are exercised live via Docker."""
 
-    def __init__(self, response, claimed=None):
+    def __init__(self, response, claimed=None, pending=0):
         self._response = response
         self._claimed = claimed or []
+        self._pending = pending
         self.xack_calls: list[tuple] = []
 
     async def xreadgroup(self, group, consumer_name, streams, count, block):
@@ -62,6 +64,9 @@ class _FakeStreamRedis:
 
     async def xack(self, stream, group, *message_ids):
         self.xack_calls.append((stream, group, message_ids))
+
+    async def xpending(self, name, groupname):
+        return {"pending": self._pending}
 
 
 def _reserved_message(reservation_id: str, sku: str = "WIDGET-1", quantity: str = "10"):
@@ -319,6 +324,15 @@ async def test_run_once_returns_zero_when_no_messages(monkeypatch):
     processed = await run_once("consumer-1")
 
     assert processed == 0
+
+
+@pytest.mark.asyncio
+async def test_run_once_sets_the_consumer_group_pending_gauge(monkeypatch):
+    monkeypatch.setattr(worker, "redis_client", _FakeStreamRedis(response=None, pending=7))
+
+    await run_once("consumer-1")
+
+    assert WORKER_CONSUMER_GROUP_PENDING._value.get() == 7
 
 
 @pytest.mark.asyncio

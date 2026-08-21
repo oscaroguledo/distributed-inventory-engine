@@ -1,12 +1,19 @@
 import logging
 import re
+import time
 import uuid
 from pathlib import Path
 
+from prometheus_client import start_http_server
 from redis.asyncio import Redis
 
 from order_api.core.config import get_settings
 from order_api.core.db.redis import redis_client
+from order_api.core.metrics import (
+    SWEEPER_EXPIRED_HOLDS,
+    SWEEPER_LAST_ACTIVITY,
+    SWEEPER_SWEEP_DURATION,
+)
 
 logger = logging.getLogger("order_api.sweeper")
 
@@ -57,20 +64,22 @@ class Sweeper:
             return False
         reservation_id, sku, quantity = parsed
 
-        status, available = await self._sweep_script(
-            keys=[
-                f"sweep_claim:{reservation_id}",
-                f"hold:{reservation_id}",
-                self.stream_name,
-            ],
-            args=[str(reservation_id), sku, quantity, self.claim_ttl_seconds],
-        )
+        with SWEEPER_SWEEP_DURATION.time():
+            status, available = await self._sweep_script(
+                keys=[
+                    f"sweep_claim:{reservation_id}",
+                    f"hold:{reservation_id}",
+                    self.stream_name,
+                ],
+                args=[str(reservation_id), sku, quantity, self.claim_ttl_seconds],
+            )
         status = status.decode() if isinstance(status, bytes) else status
 
         if status == "already_claimed":
             logger.info("sweep skipped, already claimed: reservation_id=%s", reservation_id)
             return False
 
+        SWEEPER_EXPIRED_HOLDS.inc()
         logger.info(
             "swept abandoned hold: reservation_id=%s sku=%s quantity=%d available=%s",
             reservation_id,
@@ -85,6 +94,7 @@ async def run() -> None:  # pragma: no cover -- infinite pub/sub loop, verified 
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
 
+    start_http_server(settings.sweeper_metrics_port)
     await ensure_expiry_notifications(redis_client)
     sweeper = Sweeper(
         redis=redis_client,
@@ -99,6 +109,7 @@ async def run() -> None:  # pragma: no cover -- infinite pub/sub loop, verified 
     async for message in pubsub.listen():
         if message["type"] != "pmessage":
             continue
+        SWEEPER_LAST_ACTIVITY.set(time.time())
         try:
             await sweeper.handle_expired_key(message["data"])
         except Exception:

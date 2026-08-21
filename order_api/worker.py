@@ -2,12 +2,18 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from prometheus_client import start_http_server
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from order_api.core.config import get_settings
 from order_api.core.db.postgresql import AsyncSessionLocal
 from order_api.core.db.redis import redis_client
+from order_api.core.metrics import (
+    WORKER_BATCH_DURATION,
+    WORKER_CONSUMER_GROUP_PENDING,
+    WORKER_EVENTS_PROCESSED,
+)
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.inventory_reservations import InventoryReservation
 from order_api.models.stock_audit_ledger import StockAuditLedger
@@ -155,29 +161,31 @@ async def process_batch(
 ) -> tuple[int, list[str]]:
     """Persists 'reserved'/'committed'/'released' events (ORDER_LIFECYCLE.md).
     Returns (applied_count, ack_ids) — "retry" status stays un-acked for reclaim."""
-    processed = 0
-    ack_ids = []
-    balances = await _lock_balances(session, messages)
+    with WORKER_BATCH_DURATION.time():
+        processed = 0
+        ack_ids = []
+        balances = await _lock_balances(session, messages)
 
-    for message_id, fields in messages:
-        event_type = fields.get("event_type")
-        if event_type == "reserved":
-            status = await _apply_reserved(session, fields)
-        elif event_type == "committed":
-            status = await _apply_committed(session, fields)
-        elif event_type == "released":
-            status = await _apply_released(session, fields)
-        else:
-            status = "skipped"
+        for message_id, fields in messages:
+            event_type = fields.get("event_type")
+            if event_type == "reserved":
+                status = await _apply_reserved(session, fields)
+            elif event_type == "committed":
+                status = await _apply_committed(session, fields)
+            elif event_type == "released":
+                status = await _apply_released(session, fields)
+            else:
+                status = "skipped"
 
-        if status == "applied":
-            processed += 1
-        if status != "retry":
-            ack_ids.append(message_id)
+            if status == "applied":
+                processed += 1
+                WORKER_EVENTS_PROCESSED.labels(event_type=event_type).inc()
+            if status != "retry":
+                ack_ids.append(message_id)
 
-    await _recompute_available(session, balances)
-    await session.commit()
-    return processed, ack_ids
+        await _recompute_available(session, balances)
+        await session.commit()
+        return processed, ack_ids
 
 
 async def run_once(consumer_name: str) -> int:
@@ -207,6 +215,9 @@ async def run_once(consumer_name: str) -> int:
             if ack_ids:
                 await redis_client.xack(stream, group, *ack_ids)
 
+    pending_summary = await redis_client.xpending(stream, group)
+    WORKER_CONSUMER_GROUP_PENDING.set((pending_summary or {}).get("pending", 0))
+
     return total
 
 
@@ -215,6 +226,7 @@ async def run() -> None:  # pragma: no cover -- infinite poll loop, verified liv
     logging.basicConfig(level=settings.log_level)
     consumer_name = f"worker-{uuid.uuid4().hex[:8]}"
 
+    start_http_server(settings.worker_metrics_port)
     await ensure_consumer_group(
         redis_client, settings.stream_inventory_events, settings.consumer_group_inventory_sync
     )

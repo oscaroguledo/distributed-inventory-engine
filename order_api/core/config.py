@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # rebuilding Redis — filters out normal worker flush lag, not just noise.
     watchdog_confirm_passes: int = 2
 
+    # /metrics ports for the background services — order_api serves its own
+    # on order_api_port, these are standalone processes with no HTTP server.
+    worker_metrics_port: int = 9101
+    sweeper_metrics_port: int = 9102
+    watchdog_metrics_port: int = 9103
+
 
 @lru_cache
 def get_settings() -> Settings:

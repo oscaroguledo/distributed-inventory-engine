@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 
+from order_api.core.metrics import SWEEPER_EXPIRED_HOLDS
 from order_api.sweeper import Sweeper, ensure_expiry_notifications, parse_hold_meta_key
 
 
@@ -89,11 +90,13 @@ async def test_handle_expired_key_sweeps_a_hold_meta_key(caplog):
     fake_redis = _FakeRedis()
     sweeper = Sweeper(redis=fake_redis, stream_name="stream:x", claim_ttl_seconds=30)
     reservation_id = uuid.uuid4()
+    before = SWEEPER_EXPIRED_HOLDS._value.get()
 
     with caplog.at_level("INFO"):
         handled = await sweeper.handle_expired_key(f"holdmeta:{reservation_id}:WIDGET-1:7")
 
     assert handled is True
+    assert SWEEPER_EXPIRED_HOLDS._value.get() == before + 1
     keys, args = fake_redis.script_calls[0]
     assert keys == [
         f"sweep_claim:{reservation_id}",
@@ -112,11 +115,13 @@ async def test_handle_expired_key_skips_when_already_claimed(caplog):
     fake_redis = _FakeRedis(already_claimed=True)
     sweeper = Sweeper(redis=fake_redis, stream_name="stream:x", claim_ttl_seconds=30)
     reservation_id = uuid.uuid4()
+    before = SWEEPER_EXPIRED_HOLDS._value.get()
 
     with caplog.at_level("INFO"):
         handled = await sweeper.handle_expired_key(f"holdmeta:{reservation_id}:WIDGET-1:7")
 
     assert handled is False
+    assert SWEEPER_EXPIRED_HOLDS._value.get() == before  # unchanged — no real sweep happened
     assert any(
         "already claimed" in record.message and str(reservation_id) in record.message
         for record in caplog.records
