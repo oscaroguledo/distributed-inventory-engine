@@ -26,6 +26,7 @@ RESERVE_WEIGHT = 0.85
 COMMIT_WEIGHT = 0.03
 
 CONVERGENCE_TIMEOUT_SECONDS = 20
+DRAIN_TIMEOUT_SECONDS = 20
 
 
 class State:
@@ -121,6 +122,21 @@ async def wait_for_convergence(session_factory, redis: Redis, state: State) -> N
     )
 
 
+async def wait_for_drain(redis: Redis, settings) -> None:
+    """Waits for the consumer group's pending-entries list to empty out —
+    a deferred commit/release (worker.py's xautoclaim retry) can otherwise
+    still be reclaimed after cleanup deletes this sku's rows, logging a
+    harmless-but-noisy FK violation against already-cleaned-up data."""
+    stream = settings.stream_inventory_events
+    group = settings.consumer_group_inventory_sync
+    for _ in range(DRAIN_TIMEOUT_SECONDS):
+        summary = await redis.xpending(stream, group)
+        if not summary or not summary.get("pending"):
+            return
+        await asyncio.sleep(1)
+    print("warning: consumer group still has pending entries after drain timeout")
+
+
 async def cleanup(session_factory, redis: Redis, sku: str) -> None:
     async with session_factory() as session:
         await session.execute(delete(StockAuditLedger).where(StockAuditLedger.sku == sku))
@@ -153,6 +169,7 @@ async def main() -> int:
         await run_burst(base_url, redis, state)
         if not state.failures:
             await wait_for_convergence(session_factory, redis, state)
+            await wait_for_drain(redis, settings)
     finally:
         await cleanup(session_factory, redis, sku)
         await redis.aclose()
