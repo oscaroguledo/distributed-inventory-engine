@@ -189,6 +189,18 @@ async def test_process_batch_skips_redelivered_reservation(session, seeded_balan
 
 
 @pytest.mark.asyncio
+async def test_process_batch_links_span_to_the_traceparent_field(session, seeded_balance):
+    reservation_id = str(uuid.uuid4())
+    message_id, fields = _reserved_message(reservation_id)
+    fields["traceparent"] = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+    processed, ack_ids = await process_batch(session, [(message_id, fields)])
+
+    assert processed == 1
+    assert ack_ids == ["1-0"]
+
+
+@pytest.mark.asyncio
 async def test_process_batch_ignores_unhandled_event_types(session):
     message = (
         "1-0",

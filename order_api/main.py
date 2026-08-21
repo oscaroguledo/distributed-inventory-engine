@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from order_api.core.config import get_settings
@@ -29,7 +28,6 @@ from order_api.routes.order import router as order_router
 _settings = get_settings()
 logging.basicConfig(level=_settings.log_level)
 setup_tracing(_settings.service_name, _settings.otel_exporter_otlp_endpoint)
-SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
 
 
 @asynccontextmanager

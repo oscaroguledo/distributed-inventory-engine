@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from opentelemetry import propagate, trace
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,11 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from order_api.core.config import get_settings
 from order_api.core.db.postgresql import AsyncSessionLocal
 from order_api.core.db.redis import redis_client
+from order_api.core.tracing import setup_tracing
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.inventory_reservations import InventoryReservation
 from order_api.models.stock_audit_ledger import StockAuditLedger
 
 logger = logging.getLogger("order_api.worker")
+tracer = trace.get_tracer("order_api.worker")
 
 # N replicas can commit same-sku batches out of causal order; a rejected,
 # retried CheckViolation on inventory_balances is expected — see git log.
@@ -123,6 +126,21 @@ async def _apply_released(session: AsyncSession, fields: dict) -> str:
     return "applied"
 
 
+async def _apply_event(session: AsyncSession, event_type: str | None, fields: dict) -> str:
+    """Links this span to the order_api request that produced the event, via
+    the traceparent carried in the Lua XADD fields — same trace, new span."""
+    context = propagate.extract({"traceparent": fields.get("traceparent", "")})
+    with tracer.start_as_current_span(f"worker.apply_{event_type}", context=context) as span:
+        span.set_attribute("reservation_id", fields.get("reservation_id", ""))
+        if event_type == "reserved":
+            return await _apply_reserved(session, fields)
+        if event_type == "committed":
+            return await _apply_committed(session, fields)
+        if event_type == "released":
+            return await _apply_released(session, fields)
+        return "skipped"
+
+
 async def _lock_balances(session: AsyncSession, messages: list[tuple[str, dict]]) -> dict:
     """Locks every sku in this batch once, sorted — not once per event, which
     deadlocks concurrent worker replicas re-locking the same row repeatedly."""
@@ -172,14 +190,7 @@ async def process_batch(
 
         for message_id, fields in messages:
             event_type = fields.get("event_type")
-            if event_type == "reserved":
-                status = await _apply_reserved(session, fields)
-            elif event_type == "committed":
-                status = await _apply_committed(session, fields)
-            elif event_type == "released":
-                status = await _apply_released(session, fields)
-            else:
-                status = "skipped"
+            status = await _apply_event(session, event_type, fields)
 
             if status == "applied":
                 processed += 1
@@ -228,6 +239,7 @@ async def run_once(consumer_name: str) -> int:
 async def run() -> None:  # pragma: no cover -- infinite poll loop, verified live via Docker
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
+    setup_tracing("order-api-worker", settings.otel_exporter_otlp_endpoint)
     consumer_name = f"worker-{uuid.uuid4().hex[:8]}"
 
     start_http_server(settings.worker_metrics_port)
