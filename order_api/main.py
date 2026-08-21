@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from order_api.core.config import get_settings
@@ -11,6 +13,7 @@ from order_api.core.db.postgresql import engine
 from order_api.core.metrics import HTTP_REQUEST_DURATION, HTTP_REQUESTS
 from order_api.core.rate_limiter import RateLimitExceeded
 from order_api.core.response import EResponse
+from order_api.core.tracing import setup_tracing
 from order_api.models import (  # noqa: F401
     inventory_balances,
     inventory_reservations,
@@ -23,7 +26,10 @@ from order_api.routes.order import router as order_router
 
 # Configured at import time, not inside __main__ — uvicorn imports this
 # module directly, so a __main__-guarded config would never run.
-logging.basicConfig(level=get_settings().log_level)
+_settings = get_settings()
+logging.basicConfig(level=_settings.log_level)
+setup_tracing(_settings.service_name, _settings.otel_exporter_otlp_endpoint)
+SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
 
 
 @asynccontextmanager
@@ -36,6 +42,7 @@ async def lifespan(app: FastAPI):  # pragma: no cover -- real Postgres, verified
 
 
 app = FastAPI(title="Order API", lifespan=lifespan)
+FastAPIInstrumentor.instrument_app(app, excluded_urls="/metrics,/health")
 app.include_router(health_router)
 app.include_router(order_router)
 

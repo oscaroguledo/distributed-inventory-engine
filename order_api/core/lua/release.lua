@@ -4,6 +4,7 @@
 local hold_key = KEYS[1]
 local stream_key = KEYS[2]
 local reservation_id = ARGV[1]
+local traceparent = ARGV[2]
 
 if redis.call("EXISTS", hold_key) == 0 then
     return {"not_found", "", 0, 0}
@@ -20,7 +21,8 @@ redis.call(
     "event_type", "released",
     "reservation_id", reservation_id,
     "sku", sku,
-    "quantity", quantity
+    "quantity", quantity,
+    "traceparent", traceparent
 )
 
 return {"released", sku, quantity, available}

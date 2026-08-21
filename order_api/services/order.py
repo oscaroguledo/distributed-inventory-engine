@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import Depends
+from opentelemetry import propagate, trace
 from redis.asyncio import Redis
 
 from order_api.core.config import get_settings
@@ -11,6 +12,15 @@ from order_api.core.db.redis import get_redis
 from order_api.core.metrics import LUA_SCRIPT_DURATION, REDIS_WAIT_TIMEOUTS, STOCK_AVAILABLE
 
 logger = logging.getLogger("order_api.services.order")
+tracer = trace.get_tracer("order_api.services.order")
+
+
+def _current_traceparent() -> str:
+    """W3C traceparent for the active span — carried through the Lua XADD
+    fields so the worker can link its own span to this same trace."""
+    carrier: dict[str, str] = {}
+    propagate.inject(carrier)
+    return carrier.get("traceparent", "")
 
 _LUA_DIR = Path(__file__).resolve().parent.parent / "core" / "lua"
 _RESERVE_SCRIPT_PATH = _LUA_DIR / "reserve.lua"
@@ -120,7 +130,8 @@ class OrderService:
     async def _run_script(self, name: str, script, *, keys: list, args: list):
         start = time.monotonic()
         try:
-            return await script(keys=keys, args=args)
+            with tracer.start_as_current_span(f"redis.{name}"):
+                return await script(keys=keys, args=args)
         finally:
             LUA_SCRIPT_DURATION.labels(script=name).observe(time.monotonic() - start)
 
@@ -138,7 +149,13 @@ class OrderService:
             "reserve",
             self._reserve_script,
             keys=[f"stock:{sku}:available", f"hold:{reservation_id}", self.stream_name],
-            args=[sku, quantity, str(reservation_id), self.hold_ttl_seconds],
+            args=[
+                sku,
+                quantity,
+                str(reservation_id),
+                self.hold_ttl_seconds,
+                _current_traceparent(),
+            ],
         )
         status = status.decode() if isinstance(status, bytes) else status
         available = int(available)
@@ -183,7 +200,7 @@ class OrderService:
             "commit",
             self._commit_script,
             keys=[f"hold:{reservation_id}", self.stream_name],
-            args=[str(reservation_id)],
+            args=[str(reservation_id), _current_traceparent()],
         )
         status = status.decode() if isinstance(status, bytes) else status
         sku = sku.decode() if isinstance(sku, bytes) else sku
@@ -202,7 +219,7 @@ class OrderService:
             "release",
             self._release_script,
             keys=[f"hold:{reservation_id}", self.stream_name],
-            args=[str(reservation_id)],
+            args=[str(reservation_id), _current_traceparent()],
         )
         status = status.decode() if isinstance(status, bytes) else status
         sku = sku.decode() if isinstance(sku, bytes) else sku

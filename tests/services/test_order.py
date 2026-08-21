@@ -35,7 +35,7 @@ class _FakeRedis:
     async def _reserve(self, keys, args):
         self.script_calls.append((keys, args))
         stock_key, hold_key, _stream_key = keys
-        sku, quantity, _reservation_id, _hold_ttl = args
+        sku, quantity, _reservation_id, _hold_ttl, _traceparent = args
         quantity = int(quantity)
 
         if hold_key in self.holds:

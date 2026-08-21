@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     sweeper_metrics_port: int = 9102
     watchdog_metrics_port: int = 9103
 
+    otel_exporter_otlp_endpoint: str = "jaeger:4317"
+
 
 @lru_cache
 def get_settings() -> Settings:
