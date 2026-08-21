@@ -1,0 +1,11 @@
+# No real notification channel wired up — plug in Slack/PagerDuty/email
+# credentials under receivers.slack_configs (etc.) and route to it below.
+route:
+  receiver: default
+  group_by: ["alertname", "sku"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default

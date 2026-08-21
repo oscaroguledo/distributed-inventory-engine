@@ -1,0 +1,53 @@
+groups:
+  - name: distributed-inventory-engine
+    rules:
+      # SYSTEM_DESIGN.md: "Four alerts matter most: reconciliation drift,
+      # consumer lag, WAIT timeout spikes, and sweeper lag — each one means
+      # the correctness guarantee is currently weaker than advertised."
+
+      - alert: ReconciliationDriftRebuilt
+        expr: increase(watchdog_rebuilds_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Watchdog rebuilt Redis from Postgres for {{ $labels.sku }}"
+          description: >
+            Redis's counter drifted from the Postgres ledger and had to be
+            rebuilt. The system self-healed, but this is a symptom worth
+            investigating — see watchdog_drift_magnitude for the size.
+
+      - alert: ConsumerGroupLagHigh
+        expr: worker_consumer_group_pending > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "inventory_sync_workers consumer-group lag is high"
+          description: >
+            worker_consumer_group_pending has been above 100 for 2+ minutes —
+            workers are falling behind the stream. Scale worker replicas.
+
+      - alert: RedisWaitTimeoutSpike
+        expr: rate(order_api_redis_wait_timeouts_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis WAIT is timing out on {{ $labels.operation }}"
+          description: >
+            The replica isn't acking writes within wait_timeout_ms — the
+            leading indicator that replication is falling behind, before a
+            failover could actually lose data.
+
+      - alert: SweeperLagging
+        expr: time() - sweeper_last_activity_timestamp_seconds > 300
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sweeper has seen no pub/sub activity in 5+ minutes"
+          description: >
+            No expired-key notification has reached the sweeper recently —
+            either it's down or Redis keyspace notifications stopped firing.
+            Abandoned holds will stay locked past their advertised TTL.
