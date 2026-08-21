@@ -10,6 +10,7 @@ local sku = ARGV[1]
 local quantity = tonumber(ARGV[2])
 local reservation_id = ARGV[3]
 local hold_ttl = tonumber(ARGV[4])
+local traceparent = ARGV[5]
 
 -- Idempotency: a hold ticket already exists for this reservation_id, so a
 -- retried request is a no-op rather than a second decrement.
@@ -37,7 +38,8 @@ redis.call(
     "event_type", "reserved",
     "reservation_id", reservation_id,
     "sku", sku,
-    "quantity", quantity
+    "quantity", quantity,
+    "traceparent", traceparent
 )
 
 return {"held", redis.call("GET", stock_key)}

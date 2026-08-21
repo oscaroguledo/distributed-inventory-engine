@@ -25,6 +25,22 @@ services:
       timeout: 5s
       retries: 10
 
+  redis-replica:
+    image: redis:7-alpine
+    # SYSTEM_DESIGN.md "primary + N replicas" — N=1 here. REDIS_WAIT_REPLICAS
+    # is what makes the API's WAIT call actually block on this link existing.
+    command: ["redis-server", "--replicaof", "redis", "6379"]
+    ports:
+      - "${REDIS_REPLICA_PORT}:6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   pgbouncer:
     build:
       context: ./pgbouncer
@@ -68,6 +84,7 @@ services:
       RATE_LIMIT_CAPACITY: ${RATE_LIMIT_CAPACITY}
       RATE_LIMIT_REFILL_PER_SECOND: ${RATE_LIMIT_REFILL_PER_SECOND}
       RATE_LIMIT_TTL_SECONDS: ${RATE_LIMIT_TTL_SECONDS}
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
     ports:
       - "${ORDER_API_PORT}:8000"
     depends_on:
@@ -102,6 +119,10 @@ services:
       LOG_LEVEL: ${LOG_LEVEL}
       STREAM_INVENTORY_EVENTS: ${STREAM_INVENTORY_EVENTS}
       CONSUMER_GROUP_INVENTORY_SYNC: ${CONSUMER_GROUP_INVENTORY_SYNC}
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT}
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+    expose:
+      - "${WORKER_METRICS_PORT}"  # N replicas can't share a host port — Prometheus DNS-discovers them
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -121,6 +142,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL}
       STREAM_INVENTORY_EVENTS: ${STREAM_INVENTORY_EVENTS}
       SWEEP_CLAIM_TTL_SECONDS: ${SWEEP_CLAIM_TTL_SECONDS}
+      SWEEPER_METRICS_PORT: ${SWEEPER_METRICS_PORT}
+    ports:
+      - "${SWEEPER_METRICS_PORT}:${SWEEPER_METRICS_PORT}"
     depends_on:
       redis:
         condition: service_healthy
@@ -139,6 +163,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL}
       WATCHDOG_POLL_INTERVAL_SECONDS: ${WATCHDOG_POLL_INTERVAL_SECONDS}
       WATCHDOG_CONFIRM_PASSES: ${WATCHDOG_CONFIRM_PASSES}
+      WATCHDOG_METRICS_PORT: ${WATCHDOG_METRICS_PORT}
+    ports:
+      - "${WATCHDOG_METRICS_PORT}:${WATCHDOG_METRICS_PORT}"
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -146,6 +173,70 @@ services:
         condition: service_healthy
       order_api:
         condition: service_healthy
+
+  redis_exporter:
+    image: oliver006/redis_exporter:v1.63.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports:
+      - "${REDIS_EXPORTER_PORT}:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  postgres_exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    ports:
+      - "${POSTGRES_EXPORTER_PORT}:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "${PROMETHEUS_PORT}:9090"
+    depends_on:
+      order_api:
+        condition: service_healthy
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "${ALERTMANAGER_PORT}:9093"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT}:16686"  # trace search UI
+      - "4317"  # OTLP/gRPC receiver — order_api/worker reach it by service name, no host port needed
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "${GRAFANA_PORT}:3000"
+    depends_on:
+      - prometheus
 
 volumes:
   pgdata:

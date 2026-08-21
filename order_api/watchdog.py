@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import time
 
+from prometheus_client import Counter, Gauge, start_http_server
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -12,6 +14,17 @@ from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.reconciliation_log import ReconciliationLog
 
 logger = logging.getLogger("order_api.watchdog")
+
+# SYSTEM_DESIGN.md Monitoring table, Reconciliation watchdog row.
+WATCHDOG_DRIFT_MAGNITUDE = Gauge(
+    "watchdog_drift_magnitude", "Most recently observed |redis - postgres| drift", ["sku"]
+)
+WATCHDOG_REBUILDS = Counter(
+    "watchdog_rebuilds_total", "Times Redis was rebuilt from Postgres", ["sku"]
+)
+WATCHDOG_LAST_RUN = Gauge(
+    "watchdog_last_run_timestamp_seconds", "Unix time the watchdog last completed a poll"
+)
 
 
 class ReconciliationWatchdog:
@@ -49,6 +62,7 @@ class ReconciliationWatchdog:
                 streak = self._drift_streak.get(sku, 0) + 1
                 self._drift_streak[sku] = streak
                 drift = (redis_available or 0) - balance.available
+                WATCHDOG_DRIFT_MAGNITUDE.labels(sku=sku).set(abs(drift))
 
                 logger.warning(
                     "drift detected: sku=%s redis=%s postgres=%d drift=%d streak=%d",
@@ -70,6 +84,7 @@ class ReconciliationWatchdog:
                         )
                     )
                     await session.commit()
+                    WATCHDOG_REBUILDS.labels(sku=sku).inc()
                     logger.warning(
                         "rebuilt redis from postgres: sku=%s postgres=%d (was %s)",
                         sku,
@@ -79,6 +94,7 @@ class ReconciliationWatchdog:
                     rebuilt[sku] = drift
                     self._drift_streak.pop(sku, None)
 
+        WATCHDOG_LAST_RUN.set(time.time())
         return rebuilt
 
 
@@ -86,6 +102,7 @@ async def run() -> None:  # pragma: no cover -- infinite poll loop, verified liv
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
 
+    start_http_server(settings.watchdog_metrics_port)
     watchdog = ReconciliationWatchdog(
         redis=redis_client,
         session_factory=AsyncSessionLocal,

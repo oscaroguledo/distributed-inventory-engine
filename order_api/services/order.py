@@ -1,14 +1,26 @@
 import logging
+import time
 import uuid
 from pathlib import Path
 
 from fastapi import Depends
+from opentelemetry import propagate, trace
 from redis.asyncio import Redis
 
 from order_api.core.config import get_settings
 from order_api.core.db.redis import get_redis
+from order_api.core.metrics import LUA_SCRIPT_DURATION, REDIS_WAIT_TIMEOUTS, STOCK_AVAILABLE
 
 logger = logging.getLogger("order_api.services.order")
+tracer = trace.get_tracer("order_api.services.order")
+
+
+def _current_traceparent() -> str:
+    """W3C traceparent for the active span — carried through the Lua XADD
+    fields so the worker can link its own span to this same trace."""
+    carrier: dict[str, str] = {}
+    propagate.inject(carrier)
+    return carrier.get("traceparent", "")
 
 _LUA_DIR = Path(__file__).resolve().parent.parent / "core" / "lua"
 _RESERVE_SCRIPT_PATH = _LUA_DIR / "reserve.lua"
@@ -115,12 +127,35 @@ class OrderService:
         self._commit_script = redis.register_script(_COMMIT_SCRIPT_PATH.read_text())
         self._release_script = redis.register_script(_RELEASE_SCRIPT_PATH.read_text())
 
+    async def _run_script(self, name: str, script, *, keys: list, args: list):
+        start = time.monotonic()
+        try:
+            with tracer.start_as_current_span(f"redis.{name}"):
+                return await script(keys=keys, args=args)
+        finally:
+            LUA_SCRIPT_DURATION.labels(script=name).observe(time.monotonic() - start)
+
+    async def _wait_for_replicas(self, operation: str) -> None:
+        if self.wait_replicas <= 0:
+            return
+        acked = await self.redis.wait(self.wait_replicas, self.wait_timeout_ms)
+        if acked < self.wait_replicas:
+            REDIS_WAIT_TIMEOUTS.labels(operation=operation).inc()
+
     async def reserve(
         self, sku: str, quantity: int, reservation_id: uuid.UUID
     ) -> ReservationHeld:
-        status, available = await self._reserve_script(
+        status, available = await self._run_script(
+            "reserve",
+            self._reserve_script,
             keys=[f"stock:{sku}:available", f"hold:{reservation_id}", self.stream_name],
-            args=[sku, quantity, str(reservation_id), self.hold_ttl_seconds],
+            args=[
+                sku,
+                quantity,
+                str(reservation_id),
+                self.hold_ttl_seconds,
+                _current_traceparent(),
+            ],
         )
         status = status.decode() if isinstance(status, bytes) else status
         available = int(available)
@@ -131,6 +166,7 @@ class OrderService:
             )
             raise SkuNotFoundError(sku)
         if status == "insufficient_stock":
+            STOCK_AVAILABLE.labels(sku=sku).set(available)
             logger.info(
                 "reserve rejected: insufficient stock sku=%s requested=%d available=%d "
                 "reservation_id=%s",
@@ -141,8 +177,8 @@ class OrderService:
             )
             raise InsufficientStockError(sku=sku, requested=quantity, available=available)
 
-        if self.wait_replicas > 0:
-            await self.redis.wait(self.wait_replicas, self.wait_timeout_ms)
+        await self._wait_for_replicas("reserve")
+        STOCK_AVAILABLE.labels(sku=sku).set(available)
 
         if status == "duplicate":
             logger.info("reserve idempotent replay: reservation_id=%s sku=%s", reservation_id, sku)
@@ -160,9 +196,11 @@ class OrderService:
         )
 
     async def commit(self, reservation_id: uuid.UUID) -> ReservationCommitted:
-        status, sku = await self._commit_script(
+        status, sku = await self._run_script(
+            "commit",
+            self._commit_script,
             keys=[f"hold:{reservation_id}", self.stream_name],
-            args=[str(reservation_id)],
+            args=[str(reservation_id), _current_traceparent()],
         )
         status = status.decode() if isinstance(status, bytes) else status
         sku = sku.decode() if isinstance(sku, bytes) else sku
@@ -171,16 +209,17 @@ class OrderService:
             logger.warning("commit rejected: no hold for reservation_id=%s", reservation_id)
             raise HoldNotFoundError(reservation_id)
 
-        if self.wait_replicas > 0:
-            await self.redis.wait(self.wait_replicas, self.wait_timeout_ms)
+        await self._wait_for_replicas("commit")
 
         logger.info("reservation committed: reservation_id=%s sku=%s", reservation_id, sku)
         return ReservationCommitted(reservation_id=reservation_id, sku=sku)
 
     async def release(self, reservation_id: uuid.UUID) -> ReservationReleased:
-        status, sku, quantity, available = await self._release_script(
+        status, sku, quantity, available = await self._run_script(
+            "release",
+            self._release_script,
             keys=[f"hold:{reservation_id}", self.stream_name],
-            args=[str(reservation_id)],
+            args=[str(reservation_id), _current_traceparent()],
         )
         status = status.decode() if isinstance(status, bytes) else status
         sku = sku.decode() if isinstance(sku, bytes) else sku
@@ -189,8 +228,8 @@ class OrderService:
             logger.warning("release rejected: no hold for reservation_id=%s", reservation_id)
             raise HoldNotFoundError(reservation_id)
 
-        if self.wait_replicas > 0:
-            await self.redis.wait(self.wait_replicas, self.wait_timeout_ms)
+        await self._wait_for_replicas("release")
+        STOCK_AVAILABLE.labels(sku=sku).set(int(available))
 
         logger.info(
             "reservation released: reservation_id=%s sku=%s quantity=%d available=%d",

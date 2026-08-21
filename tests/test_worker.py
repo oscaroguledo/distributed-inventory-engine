@@ -10,7 +10,12 @@ from order_api.models.base import Base
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.inventory_reservations import InventoryReservation
 from order_api.models.stock_audit_ledger import StockAuditLedger
-from order_api.worker import ensure_consumer_group, process_batch, run_once
+from order_api.worker import (
+    WORKER_CONSUMER_GROUP_PENDING,
+    ensure_consumer_group,
+    process_batch,
+    run_once,
+)
 
 
 @pytest.fixture
@@ -49,9 +54,10 @@ class _FakeStreamRedis:
     """Simulates just enough of Redis for run_once — XAUTOCLAIM/XREADGROUP/
     XACK — the real streaming semantics are exercised live via Docker."""
 
-    def __init__(self, response, claimed=None):
+    def __init__(self, response, claimed=None, pending=0):
         self._response = response
         self._claimed = claimed or []
+        self._pending = pending
         self.xack_calls: list[tuple] = []
 
     async def xreadgroup(self, group, consumer_name, streams, count, block):
@@ -62,6 +68,9 @@ class _FakeStreamRedis:
 
     async def xack(self, stream, group, *message_ids):
         self.xack_calls.append((stream, group, message_ids))
+
+    async def xpending(self, name, groupname):
+        return {"pending": self._pending}
 
 
 def _reserved_message(reservation_id: str, sku: str = "WIDGET-1", quantity: str = "10"):
@@ -177,6 +186,18 @@ async def test_process_batch_skips_redelivered_reservation(session, seeded_balan
         "skipped redelivered event" in record.message and reservation_id in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_process_batch_links_span_to_the_traceparent_field(session, seeded_balance):
+    reservation_id = str(uuid.uuid4())
+    message_id, fields = _reserved_message(reservation_id)
+    fields["traceparent"] = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+    processed, ack_ids = await process_batch(session, [(message_id, fields)])
+
+    assert processed == 1
+    assert ack_ids == ["1-0"]
 
 
 @pytest.mark.asyncio
@@ -319,6 +340,15 @@ async def test_run_once_returns_zero_when_no_messages(monkeypatch):
     processed = await run_once("consumer-1")
 
     assert processed == 0
+
+
+@pytest.mark.asyncio
+async def test_run_once_sets_the_consumer_group_pending_gauge(monkeypatch):
+    monkeypatch.setattr(worker, "redis_client", _FakeStreamRedis(response=None, pending=7))
+
+    await run_once("consumer-1")
+
+    assert WORKER_CONSUMER_GROUP_PENDING._value.get() == 7
 
 
 @pytest.mark.asyncio

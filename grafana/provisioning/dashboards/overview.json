@@ -1,0 +1,136 @@
+{
+  "title": "Distributed Inventory Engine",
+  "uid": "distributed-inventory-engine",
+  "editable": true,
+  "timezone": "browser",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate by path",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (path, status) (rate(order_api_requests_total[1m]))",
+          "legendFormat": "{{path}} {{status}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Request latency (p50/p95/p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, path) (rate(order_api_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{path}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(order_api_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{path}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, path) (rate(order_api_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{path}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "429s (rate limit rejections)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{ "expr": "sum(rate(order_api_rate_limit_rejections_total[1m]))" }]
+    },
+    {
+      "id": 4,
+      "title": "Redis WAIT timeouts",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(order_api_redis_wait_timeouts_total[5m]))",
+          "legendFormat": "{{operation}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Lua script latency (p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, script) (rate(order_api_lua_script_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{script}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Available stock per sku",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 15, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "order_api_stock_available", "legendFormat": "{{sku}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Consumer-group pending (lag)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 15, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "worker_consumer_group_pending", "legendFormat": "{{instance}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Events processed / sec, by type",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 22, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (event_type) (rate(worker_events_processed_total[1m]))",
+          "legendFormat": "{{event_type}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Sweeper: expired holds / sec",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 22, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [{ "expr": "rate(sweeper_expired_holds_total[5m])" }]
+    },
+    {
+      "id": 10,
+      "title": "Watchdog: drift magnitude & rebuilds",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 22, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "watchdog_drift_magnitude", "legendFormat": "drift {{sku}}" },
+        {
+          "expr": "sum by (sku) (rate(watchdog_rebuilds_total[5m]))",
+          "legendFormat": "rebuilds/s {{sku}}"
+        }
+      ]
+    }
+  ]
+}

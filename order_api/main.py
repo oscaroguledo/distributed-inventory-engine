@@ -1,13 +1,18 @@
 import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from order_api.core.config import get_settings
 from order_api.core.db.postgresql import engine
+from order_api.core.metrics import HTTP_REQUEST_DURATION, HTTP_REQUESTS
 from order_api.core.rate_limiter import RateLimitExceeded
 from order_api.core.response import EResponse
+from order_api.core.tracing import setup_tracing
 from order_api.models import (  # noqa: F401
     inventory_balances,
     inventory_reservations,
@@ -20,7 +25,9 @@ from order_api.routes.order import router as order_router
 
 # Configured at import time, not inside __main__ — uvicorn imports this
 # module directly, so a __main__-guarded config would never run.
-logging.basicConfig(level=get_settings().log_level)
+_settings = get_settings()
+logging.basicConfig(level=_settings.log_level)
+setup_tracing(_settings.service_name, _settings.otel_exporter_otlp_endpoint)
 
 
 @asynccontextmanager
@@ -33,8 +40,30 @@ async def lifespan(app: FastAPI):  # pragma: no cover -- real Postgres, verified
 
 
 app = FastAPI(title="Order API", lifespan=lifespan)
+FastAPIInstrumentor.instrument_app(app, excluded_urls="/metrics,/health")
 app.include_router(health_router)
 app.include_router(order_router)
+
+
+@app.middleware("http")
+async def prometheus_middleware(request: Request, call_next):
+    # route path template (e.g. "/reserve"), not the raw URL — keeps the
+    # label cardinality bounded instead of growing per garbage/404 path.
+    start = time.monotonic()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    path = route.path if route is not None else "unmatched"
+
+    HTTP_REQUESTS.labels(method=request.method, path=path, status=response.status_code).inc()
+    HTTP_REQUEST_DURATION.labels(method=request.method, path=path).observe(
+        time.monotonic() - start
+    )
+    return response
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.exception_handler(RateLimitExceeded)

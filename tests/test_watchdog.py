@@ -5,7 +5,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from order_api.models.base import Base
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.reconciliation_log import ReconciliationLog
-from order_api.watchdog import ReconciliationWatchdog
+from order_api.watchdog import (
+    WATCHDOG_DRIFT_MAGNITUDE,
+    WATCHDOG_REBUILDS,
+    ReconciliationWatchdog,
+)
 
 
 class _FakeRedis:
@@ -65,11 +69,15 @@ async def test_run_once_does_not_rebuild_on_first_mismatch(session_factory, capl
         redis=fake_redis, session_factory=session_factory, confirm_passes=2
     )
 
+    rebuilds_before = WATCHDOG_REBUILDS.labels(sku="WIDGET-1")._value.get()
+
     with caplog.at_level("WARNING"):
         rebuilt = await watchdog.run_once()
 
     assert rebuilt == {}
     assert fake_redis.set_calls == []
+    assert WATCHDOG_DRIFT_MAGNITUDE.labels(sku="WIDGET-1")._value.get() == 5  # |85 - 90|
+    assert WATCHDOG_REBUILDS.labels(sku="WIDGET-1")._value.get() == rebuilds_before  # no rebuild
     assert any(
         "drift detected" in record.message and "sku=WIDGET-1" in record.message
         for record in caplog.records
@@ -84,12 +92,15 @@ async def test_run_once_rebuilds_after_confirm_passes(session_factory, caplog):
         redis=fake_redis, session_factory=session_factory, confirm_passes=2
     )
 
+    rebuilds_before = WATCHDOG_REBUILDS.labels(sku="WIDGET-1")._value.get()
+
     await watchdog.run_once()
     with caplog.at_level("WARNING"):
         rebuilt = await watchdog.run_once()
 
     assert rebuilt == {"WIDGET-1": -5}
     assert fake_redis.set_calls == [("stock:WIDGET-1:available", 90)]
+    assert WATCHDOG_REBUILDS.labels(sku="WIDGET-1")._value.get() == rebuilds_before + 1
     assert any(
         "rebuilt redis from postgres" in record.message and "sku=WIDGET-1" in record.message
         for record in caplog.records

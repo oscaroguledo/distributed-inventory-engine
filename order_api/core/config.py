@@ -20,8 +20,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     hold_ttl_seconds: int = 900
-    # Local Docker Compose runs a single Redis, no replica — 0 means WAIT is
-    # skipped entirely. Set >0 once a real Sentinel/replica topology exists.
+    # 0 means WAIT is skipped entirely — the safe default outside Docker,
+    # where no replica exists. docker-compose overrides this to 1 to match
+    # the redis-replica service (SYSTEM_DESIGN.md "primary + N replicas").
     redis_wait_replicas: int = 0
     redis_wait_timeout_ms: int = 200
 
@@ -40,6 +41,14 @@ class Settings(BaseSettings):
     # Requires drift to persist across this many consecutive polls before
     # rebuilding Redis — filters out normal worker flush lag, not just noise.
     watchdog_confirm_passes: int = 2
+
+    # /metrics ports for the background services — order_api serves its own
+    # on order_api_port, these are standalone processes with no HTTP server.
+    worker_metrics_port: int = 9101
+    sweeper_metrics_port: int = 9102
+    watchdog_metrics_port: int = 9103
+
+    otel_exporter_otlp_endpoint: str = "jaeger:4317"
 
 
 @lru_cache
