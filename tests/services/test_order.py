@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 
+from order_api.core.metrics import REDIS_WAIT_TIMEOUTS
 from order_api.services.order import (
     HoldNotFoundError,
     InsufficientStockError,
@@ -15,11 +16,12 @@ class _FakeRedis:
     """Simulates just enough of Redis to test OrderService's own logic —
     the Lua scripts' actual atomicity is verified live via Docker."""
 
-    def __init__(self):
+    def __init__(self, wait_ack_count: int | None = None):
         self.store: dict[str, int] = {}
         self.holds: dict[str, dict] = {}
         self.script_calls: list[tuple[list, list]] = []
         self.wait_calls: list[tuple[int, int]] = []
+        self._wait_ack_count = wait_ack_count
 
     def register_script(self, script_body: str):
         if "insufficient_stock" in script_body:
@@ -77,7 +79,7 @@ class _FakeRedis:
 
     async def wait(self, numreplicas, timeout):
         self.wait_calls.append((numreplicas, timeout))
-        return numreplicas
+        return numreplicas if self._wait_ack_count is None else self._wait_ack_count
 
 
 @pytest.mark.asyncio
@@ -167,6 +169,24 @@ async def test_reserve_calls_wait_when_replicas_configured():
     await service.reserve(sku="WIDGET-1", quantity=1, reservation_id=uuid.uuid4())
 
     assert fake_redis.wait_calls == [(1, 100)]
+
+
+@pytest.mark.asyncio
+async def test_reserve_counts_a_wait_timeout_when_ack_falls_short():
+    fake_redis = _FakeRedis(wait_ack_count=0)  # replica never acked in time
+    service = OrderService(
+        redis=fake_redis,
+        hold_ttl_seconds=900,
+        stream_name="stream:x",
+        wait_replicas=1,
+        wait_timeout_ms=100,
+    )
+    await service.seed_stock("WIDGET-1", 100)
+    before = REDIS_WAIT_TIMEOUTS.labels(operation="reserve")._value.get()
+
+    await service.reserve(sku="WIDGET-1", quantity=1, reservation_id=uuid.uuid4())
+
+    assert REDIS_WAIT_TIMEOUTS.labels(operation="reserve")._value.get() == before + 1
 
 
 @pytest.mark.asyncio
