@@ -68,6 +68,7 @@ services:
       RATE_LIMIT_CAPACITY: ${RATE_LIMIT_CAPACITY}
       RATE_LIMIT_REFILL_PER_SECOND: ${RATE_LIMIT_REFILL_PER_SECOND}
       RATE_LIMIT_TTL_SECONDS: ${RATE_LIMIT_TTL_SECONDS}
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
     ports:
       - "${ORDER_API_PORT}:8000"
     depends_on:
@@ -103,6 +104,7 @@ services:
       STREAM_INVENTORY_EVENTS: ${STREAM_INVENTORY_EVENTS}
       CONSUMER_GROUP_INVENTORY_SYNC: ${CONSUMER_GROUP_INVENTORY_SYNC}
       WORKER_METRICS_PORT: ${WORKER_METRICS_PORT}
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
     expose:
       - "${WORKER_METRICS_PORT}"  # N replicas can't share a host port — Prometheus DNS-discovers them
     depends_on:
@@ -197,6 +199,15 @@ services:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     ports:
       - "${ALERTMANAGER_PORT}:9093"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT}:16686"  # trace search UI
+      - "4317"  # OTLP/gRPC receiver — order_api/worker reach it by service name, no host port needed
 
   grafana:
     image: grafana/grafana:11.3.0
