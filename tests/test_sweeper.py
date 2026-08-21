@@ -43,7 +43,7 @@ def test_parse_hold_meta_key_extracts_fields():
 def test_parse_hold_meta_key_ignores_unrelated_keys():
     assert parse_hold_meta_key("hold:some-reservation") is None
     assert parse_hold_meta_key("stock:WIDGET-1:available") is None
-    assert parse_hold_meta_key(f"holdmeta:not-a-uuid:WIDGET-1:7") is None
+    assert parse_hold_meta_key("holdmeta:not-a-uuid:WIDGET-1:7") is None
 
 
 @pytest.mark.asyncio
