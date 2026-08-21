@@ -9,6 +9,7 @@ from order_api.core.config import get_settings
 from order_api.core.db.postgresql import AsyncSessionLocal
 from order_api.core.db.redis import redis_client
 from order_api.models.inventory_balances import InventoryBalance
+from order_api.models.reconciliation_log import ReconciliationLog
 
 logger = logging.getLogger("order_api.watchdog")
 
@@ -60,6 +61,15 @@ class ReconciliationWatchdog:
 
                 if streak >= self.confirm_passes:
                     await self.redis.set(redis_key, balance.available)
+                    session.add(
+                        ReconciliationLog(
+                            sku=sku,
+                            redis_available=redis_available or 0,
+                            postgres_available=balance.available,
+                            drift=drift,
+                        )
+                    )
+                    await session.commit()
                     logger.warning(
                         "rebuilt redis from postgres: sku=%s postgres=%d (was %s)",
                         sku,
