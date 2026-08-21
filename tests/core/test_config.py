@@ -23,3 +23,15 @@ def test_env_var_overrides_default(monkeypatch):
 
     monkeypatch.delenv("LOG_LEVEL", raising=False)
     get_settings.cache_clear()
+
+
+def test_settings_actually_reads_values_from_an_env_file(tmp_path):
+    """monkeypatch.setenv tests OS env vars, not file parsing — this
+    proves the .env *file* itself is actually read."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("LOG_LEVEL=WARNING\nHOLD_TTL_SECONDS=42\n")
+
+    settings = Settings(_env_file=str(env_file))
+
+    assert settings.log_level == "WARNING"
+    assert settings.hold_ttl_seconds == 42

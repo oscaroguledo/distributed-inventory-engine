@@ -31,3 +31,38 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.txt
       - run: pytest -v
+
+  load-test:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+
+      - name: Configure stack for load testing
+        run: |
+          cp .env.example .env
+          # rate limiting is a separate concern from the Lua atomicity this
+          # test proves — disable it so it can't throttle the burst itself.
+          sed -i 's/^RATE_LIMIT_CAPACITY=.*/RATE_LIMIT_CAPACITY=100000/' .env
+          sed -i 's/^RATE_LIMIT_REFILL_PER_SECOND=.*/RATE_LIMIT_REFILL_PER_SECOND=100000/' .env
+
+      - run: docker compose up -d --build
+
+      - name: Wait for order_api to be healthy
+        run: timeout 60 bash -c 'until curl -sf http://localhost:8000/health > /dev/null; do sleep 2; done'
+
+      - name: Run concurrency correctness load test
+        run: PYTHONPATH=. python tests/load/concurrency_correctness.py
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v

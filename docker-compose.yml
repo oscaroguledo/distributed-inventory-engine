@@ -34,14 +34,87 @@ services:
       # network address, not the host-facing one in .env's own POSTGRES_URL
       # or REDIS_URL (those use localhost + the remapped host ports instead).
       POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE}
+      POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW}
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: ${LOG_LEVEL}
+      HOLD_TTL_SECONDS: ${HOLD_TTL_SECONDS}
+      REDIS_WAIT_REPLICAS: ${REDIS_WAIT_REPLICAS}
+      REDIS_WAIT_TIMEOUT_MS: ${REDIS_WAIT_TIMEOUT_MS}
+      STREAM_INVENTORY_EVENTS: ${STREAM_INVENTORY_EVENTS}
+      RATE_LIMIT_CAPACITY: ${RATE_LIMIT_CAPACITY}
+      RATE_LIMIT_REFILL_PER_SECOND: ${RATE_LIMIT_REFILL_PER_SECOND}
+      RATE_LIMIT_TTL_SECONDS: ${RATE_LIMIT_TTL_SECONDS}
     ports:
       - "${ORDER_API_PORT}:8000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+    healthcheck:
+      # no migration tool yet — order_api's startup create_all is what
+      # actually provisions the schema, so worker/watchdog wait on this.
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "order_api.worker"]
+    environment:
+      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE}
+      POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL}
+      STREAM_INVENTORY_EVENTS: ${STREAM_INVENTORY_EVENTS}
+      CONSUMER_GROUP_INVENTORY_SYNC: ${CONSUMER_GROUP_INVENTORY_SYNC}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      order_api:
+        condition: service_healthy
+
+  sweeper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "order_api.sweeper"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL}
+      STREAM_INVENTORY_EVENTS: ${STREAM_INVENTORY_EVENTS}
+      SWEEP_CLAIM_TTL_SECONDS: ${SWEEP_CLAIM_TTL_SECONDS}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  watchdog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "order_api.watchdog"]
+    environment:
+      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE}
+      POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL}
+      WATCHDOG_POLL_INTERVAL_SECONDS: ${WATCHDOG_POLL_INTERVAL_SECONDS}
+      WATCHDOG_CONFIRM_PASSES: ${WATCHDOG_CONFIRM_PASSES}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      order_api:
         condition: service_healthy
 
 volumes:

@@ -20,6 +20,26 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     hold_ttl_seconds: int = 900
+    # Local Docker Compose runs a single Redis, no replica — 0 means WAIT is
+    # skipped entirely. Set >0 once a real Sentinel/replica topology exists.
+    redis_wait_replicas: int = 0
+    redis_wait_timeout_ms: int = 200
+
+    stream_inventory_events: str = "stream:inventory_events"
+    consumer_group_inventory_sync: str = "inventory_sync_workers"
+
+    # Guards a sweep against double-restoring stock when more than one
+    # sweeper replica is running (expired-key pub/sub fans out to all of them).
+    sweep_claim_ttl_seconds: int = 30
+
+    rate_limit_capacity: int = 10
+    rate_limit_refill_per_second: float = 1.0
+    rate_limit_ttl_seconds: int = 60
+
+    watchdog_poll_interval_seconds: int = 30
+    # Requires drift to persist across this many consecutive polls before
+    # rebuilding Redis — filters out normal worker flush lag, not just noise.
+    watchdog_confirm_passes: int = 2
 
 
 @lru_cache

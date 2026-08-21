@@ -36,7 +36,7 @@ Table inventory_reservations {
 }
 
 Table stock_audit_ledger {
-  id uuid [pk, default: `gen_random_uuid()`]
+  id uuid [pk, note: 'generated client-side (uuid4), not a DB server_default']
   reservation_id uuid [not null, ref: > inventory_reservations.id]
   sku text [not null]
   quantity integer [not null]
