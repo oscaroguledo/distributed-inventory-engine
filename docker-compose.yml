@@ -52,6 +52,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      # no migration tool yet — order_api's startup create_all is what
+      # actually provisions the schema, so worker/watchdog wait on this.
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
   worker:
     build:
@@ -70,6 +78,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      order_api:
         condition: service_healthy
 
   sweeper:
@@ -103,6 +113,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      order_api:
         condition: service_healthy
 
 volumes:
