@@ -90,6 +90,10 @@ services:
       dockerfile: Dockerfile
     command: ["python", "-m", "order_api.worker"]
     restart: unless-stopped
+    # Each replica gets its own uuid consumer name in the shared consumer
+    # group; ensure_consumer_group already tolerates the startup BUSYGROUP race.
+    deploy:
+      replicas: ${WORKER_REPLICAS}
     environment:
       POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}
       POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE}
