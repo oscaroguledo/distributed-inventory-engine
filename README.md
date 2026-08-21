@@ -107,6 +107,21 @@ Confirm it's healthy:
 curl http://localhost:8000/health
 ```
 
+### Seed a SKU
+
+There's no seed endpoint yet — a fresh stack has no stock for any SKU, so
+`/reserve` returns `404 unknown sku` until both stores are provisioned
+directly (Redis is what `/reserve` actually checks; the Postgres row is
+what the worker's recompute and the reconciliation watchdog track it
+against):
+
+```bash
+docker compose exec -T postgres psql -U inventory -d inventory -c \
+  "INSERT INTO inventory_balances (sku, name, total_stock, available) VALUES ('WIDGET-1', 'Widget', 100, 100) ON CONFLICT (sku) DO NOTHING;"
+
+docker compose exec -T redis redis-cli SET stock:WIDGET-1:available 100
+```
+
 ### Try a reservation
 
 ```bash
