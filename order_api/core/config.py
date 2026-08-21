@@ -20,8 +20,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     hold_ttl_seconds: int = 900
-    # Local Docker Compose runs a single Redis, no replica — 0 means WAIT is
-    # skipped entirely. Set >0 once a real Sentinel/replica topology exists.
+    # 0 means WAIT is skipped entirely — the safe default outside Docker,
+    # where no replica exists. docker-compose overrides this to 1 to match
+    # the redis-replica service (SYSTEM_DESIGN.md "primary + N replicas").
     redis_wait_replicas: int = 0
     redis_wait_timeout_ms: int = 200
 

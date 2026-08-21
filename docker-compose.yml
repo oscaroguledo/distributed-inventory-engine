@@ -25,6 +25,22 @@ services:
       timeout: 5s
       retries: 10
 
+  redis-replica:
+    image: redis:7-alpine
+    # SYSTEM_DESIGN.md "primary + N replicas" — N=1 here. REDIS_WAIT_REPLICAS
+    # is what makes the API's WAIT call actually block on this link existing.
+    command: ["redis-server", "--replicaof", "redis", "6379"]
+    ports:
+      - "${REDIS_REPLICA_PORT}:6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   pgbouncer:
     build:
       context: ./pgbouncer
