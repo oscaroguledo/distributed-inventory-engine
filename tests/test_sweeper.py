@@ -2,8 +2,12 @@ import uuid
 
 import pytest
 
-from order_api.core.metrics import SWEEPER_EXPIRED_HOLDS
-from order_api.sweeper import Sweeper, ensure_expiry_notifications, parse_hold_meta_key
+from order_api.sweeper import (
+    SWEEPER_EXPIRED_HOLDS,
+    Sweeper,
+    ensure_expiry_notifications,
+    parse_hold_meta_key,
+)
 
 
 class _FakeRedis:

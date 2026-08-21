@@ -6,12 +6,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from order_api import worker
 from order_api.core.config import get_settings
-from order_api.core.metrics import WORKER_CONSUMER_GROUP_PENDING
 from order_api.models.base import Base
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.inventory_reservations import InventoryReservation
 from order_api.models.stock_audit_ledger import StockAuditLedger
-from order_api.worker import ensure_consumer_group, process_batch, run_once
+from order_api.worker import (
+    WORKER_CONSUMER_GROUP_PENDING,
+    ensure_consumer_group,
+    process_batch,
+    run_once,
+)
 
 
 @pytest.fixture

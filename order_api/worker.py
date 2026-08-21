@@ -2,18 +2,13 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from prometheus_client import start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from order_api.core.config import get_settings
 from order_api.core.db.postgresql import AsyncSessionLocal
 from order_api.core.db.redis import redis_client
-from order_api.core.metrics import (
-    WORKER_BATCH_DURATION,
-    WORKER_CONSUMER_GROUP_PENDING,
-    WORKER_EVENTS_PROCESSED,
-)
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.inventory_reservations import InventoryReservation
 from order_api.models.stock_audit_ledger import StockAuditLedger
@@ -25,6 +20,15 @@ logger = logging.getLogger("order_api.worker")
 BATCH_SIZE = 50
 BLOCK_MS = 5000
 RECLAIM_MIN_IDLE_MS = 5000
+
+# SYSTEM_DESIGN.md Monitoring table, Stream workers row.
+WORKER_EVENTS_PROCESSED = Counter(
+    "worker_events_processed_total", "Stream events applied to Postgres", ["event_type"]
+)
+WORKER_BATCH_DURATION = Histogram("worker_batch_duration_seconds", "process_batch() latency")
+WORKER_CONSUMER_GROUP_PENDING = Gauge(
+    "worker_consumer_group_pending", "XPENDING summary count for the consumer group"
+)
 
 
 async def ensure_consumer_group(redis, stream: str, group: str) -> None:

@@ -2,11 +2,14 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from order_api.core.metrics import WATCHDOG_DRIFT_MAGNITUDE, WATCHDOG_REBUILDS
 from order_api.models.base import Base
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.reconciliation_log import ReconciliationLog
-from order_api.watchdog import ReconciliationWatchdog
+from order_api.watchdog import (
+    WATCHDOG_DRIFT_MAGNITUDE,
+    WATCHDOG_REBUILDS,
+    ReconciliationWatchdog,
+)
 
 
 class _FakeRedis:

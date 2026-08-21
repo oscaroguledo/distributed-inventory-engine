@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 
-from prometheus_client import start_http_server
+from prometheus_client import Counter, Gauge, start_http_server
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -10,11 +10,21 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from order_api.core.config import get_settings
 from order_api.core.db.postgresql import AsyncSessionLocal
 from order_api.core.db.redis import redis_client
-from order_api.core.metrics import WATCHDOG_DRIFT_MAGNITUDE, WATCHDOG_LAST_RUN, WATCHDOG_REBUILDS
 from order_api.models.inventory_balances import InventoryBalance
 from order_api.models.reconciliation_log import ReconciliationLog
 
 logger = logging.getLogger("order_api.watchdog")
+
+# SYSTEM_DESIGN.md Monitoring table, Reconciliation watchdog row.
+WATCHDOG_DRIFT_MAGNITUDE = Gauge(
+    "watchdog_drift_magnitude", "Most recently observed |redis - postgres| drift", ["sku"]
+)
+WATCHDOG_REBUILDS = Counter(
+    "watchdog_rebuilds_total", "Times Redis was rebuilt from Postgres", ["sku"]
+)
+WATCHDOG_LAST_RUN = Gauge(
+    "watchdog_last_run_timestamp_seconds", "Unix time the watchdog last completed a poll"
+)
 
 
 class ReconciliationWatchdog:

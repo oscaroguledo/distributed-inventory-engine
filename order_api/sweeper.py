@@ -4,21 +4,25 @@ import time
 import uuid
 from pathlib import Path
 
-from prometheus_client import start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from redis.asyncio import Redis
 
 from order_api.core.config import get_settings
 from order_api.core.db.redis import redis_client
-from order_api.core.metrics import (
-    SWEEPER_EXPIRED_HOLDS,
-    SWEEPER_LAST_ACTIVITY,
-    SWEEPER_SWEEP_DURATION,
-)
 
 logger = logging.getLogger("order_api.sweeper")
 
 _LUA_DIR = Path(__file__).resolve().parent / "core" / "lua"
 _SWEEP_SCRIPT_PATH = _LUA_DIR / "sweep_release.lua"
+
+# SYSTEM_DESIGN.md Monitoring table, Sweeper row.
+SWEEPER_EXPIRED_HOLDS = Counter(
+    "sweeper_expired_holds_total", "Abandoned holds swept back into available stock"
+)
+SWEEPER_SWEEP_DURATION = Histogram("sweeper_sweep_duration_seconds", "One sweep's latency")
+SWEEPER_LAST_ACTIVITY = Gauge(
+    "sweeper_last_activity_timestamp_seconds", "Unix time of the last pub/sub message seen"
+)
 
 _HOLD_META_PATTERN = re.compile(
     r"^holdmeta:(?P<reservation_id>[0-9a-fA-F-]{36}):(?P<sku>[^:]+):(?P<quantity>\d+)$"
