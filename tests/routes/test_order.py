@@ -211,3 +211,13 @@ async def test_release_returns_404_when_hold_not_found():
 
     assert response.status_code == 404
     assert response.json()["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_release_returns_429_when_rate_limited():
+    app.dependency_overrides[get_rate_limiter] = lambda: _DenyAllLimiter()
+    app.dependency_overrides[get_order_service] = lambda: _OkOrderService()
+
+    response = await _post_release({"reservation_id": str(uuid.uuid4())})
+
+    assert response.status_code == 429
